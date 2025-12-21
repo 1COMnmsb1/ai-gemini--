@@ -3,6 +3,9 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local StatsService = game:GetService("Stats")
+local CoreGui = game:GetService("CoreGui")
+local Debris = game:GetService("Debris")
+local Teams = game:GetService("Teams")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
@@ -13,11 +16,13 @@ local Config = {
     PredictionEnabled = false,
     SmartPrediction = false,
     PredictionAmount = 0.165,
+    PredictionStyle = "Standard",
     ProjectileSpeed = 1000,
     GravityCorrection = 0,
     AccelerationPrediction = false,
     TeamCheck = false,
     CoverCheck = false,
+    MultiPointCheck = false,
     ContinuousLock = false, 
     MaxDistance = 2000,
     UseFOV = false,
@@ -35,6 +40,8 @@ local Config = {
     BlacklistEnabled = false,
     Whitelist = {},
     Blacklist = {},
+    TeamWhitelistEnabled = false,
+    TeamWhitelist = {},
     PriorityMode = "Crosshair",
     DynamicSwitching = false,
     BoxSize = 5.5,
@@ -49,26 +56,47 @@ local Config = {
     ReactionDelay = 0,
     NotificationEnabled = true,
     NotificationDuration = 2.5,
+    NotificationCooldown = 0,
     TextLocked = "已锁定",
     TextUnlocked = "已解锁",
-    TextLost = "目标丢失"
+    TextLost = "目标丢失",
+    HeadshotChance = 0
+}
+
+local Kalman = {
+    X = Vector3.zero,
+    P = 1,
+    Q = 0.1,
+    R = 0.1,
+    K = 0,
+    LastUpdate = 0
 }
 
 local TargetState = {
     Velocity = Vector3.zero,
     Acceleration = Vector3.zero,
-    LastUpdate = 0
+    LastUpdate = 0,
+    PreviousPosition = Vector3.zero
 }
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "PureLockSystem"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-if game:GetService("CoreGui") then
-    pcall(function() ScreenGui.Parent = game:GetService("CoreGui") end)
-else
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local function SecureParent()
+    local success, _ = pcall(function()
+        if CoreGui then
+            ScreenGui.Parent = CoreGui
+        else
+            ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui", 5) or game:GetService("StarterGui")
+        end
+    end)
+    if not success then
+        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui", 5)
+    end
 end
+SecureParent()
 
 local NotificationContainer = Instance.new("Frame")
 NotificationContainer.Name = "DynamicIsland"
@@ -100,9 +128,15 @@ NotifyLabel.TextSize = 12
 NotifyLabel.TextXAlignment = Enum.TextXAlignment.Left
 NotifyLabel.AutomaticSize = Enum.AutomaticSize.X
 
+local lastNotifyTime = 0
+
 local function ShowNotification(title, type)
+    if not ScreenGui.Parent then SecureParent() end
     if not ScreenGui.Parent or not Config.NotificationEnabled then return end
     
+    if tick() - lastNotifyTime < Config.NotificationCooldown then return end
+    lastNotifyTime = tick()
+
     NotifyLabel.Text = title
     local bounds = game:GetService("TextService"):GetTextSize(title, 12, Enum.Font.GothamBold, Vector2.new(1000, 35))
     local targetWidth = bounds.X + 45
@@ -110,7 +144,8 @@ local function ShowNotification(title, type)
     local dotColor = Color3.fromRGB(255, 255, 255)
     if type == "Lock" then dotColor = Color3.fromRGB(0, 255, 100)
     elseif type == "Unlock" then dotColor = Color3.fromRGB(255, 50, 50)
-    elseif type == "Warn" then dotColor = Color3.fromRGB(255, 200, 50) end
+    elseif type == "Warn" then dotColor = Color3.fromRGB(255, 200, 50) 
+    elseif type == "Danger" then dotColor = Color3.fromRGB(255, 0, 0) end
     NotifyDot.BackgroundColor3 = dotColor
 
     NotificationContainer.Size = UDim2.new(0, 0, 0, 35)
@@ -147,7 +182,7 @@ local FOVCircleGui = Instance.new("ScreenGui")
 FOVCircleGui.Name = "FOVCircleGui"
 FOVCircleGui.ResetOnSpawn = false
 FOVCircleGui.IgnoreGuiInset = true
-FOVCircleGui.Parent = ScreenGui.Parent
+FOVCircleGui.Parent = ScreenGui.Parent or LocalPlayer:WaitForChild("PlayerGui")
 
 local FOVCircleFrame = Instance.new("Frame", FOVCircleGui)
 FOVCircleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -460,7 +495,15 @@ local function CreateSlider(name, desc, parent, min, max, default, callback, sma
             if Config.SmartPrediction then
                 BG.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
                 Fill.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-                UpdateVal(Config.PredictionAmount)
+                local ping = 100
+                local success, result = pcall(function()
+                     if StatsService.Network:FindFirstChild("ServerStatsItem") and StatsService.Network.ServerStatsItem:FindFirstChild("Data Ping") then
+                         return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+                     end
+                end)
+                if success and result then ping = result end
+                local base = ping / 1000
+                UpdateVal(base)
             else
                 BG.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
                 Fill.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
@@ -684,9 +727,9 @@ local function CreateColorSystem(name, parent, defaultColor, configKey, rainbowK
         end
     end
     
-    MakeRGB("R", 20, function() return Config[configKey].R*255 end, function(v) local c = Config[configKey]; Config[configKey] = Color3.fromRGB(v, c.G*255, c.B*255) end)
-    MakeRGB("G", 38, function() return Config[configKey].G*255 end, function(v) local c = Config[configKey]; Config[configKey] = Color3.fromRGB(c.R*255, v, c.B*255) end)
-    MakeRGB("B", 56, function() return Config[configKey].B*255 end, function(v) local c = Config[configKey]; Config[configKey] = Color3.fromRGB(c.R*255, c.G*255, v) end)
+    MakeRGB("R", 20, function() return Config[configKey].R*255 end, function(v) local c = Config[configKey]; Config[configKey] = Color3.fromRGB(v, c.G*255, c.B*255); UpdateSliders() end)
+    MakeRGB("G", 38, function() return Config[configKey].G*255 end, function(v) local c = Config[configKey]; Config[configKey] = Color3.fromRGB(c.R*255, v, c.B*255); UpdateSliders() end)
+    MakeRGB("B", 56, function() return Config[configKey].B*255 end, function(v) local c = Config[configKey]; Config[configKey] = Color3.fromRGB(c.R*255, c.G*255, v); UpdateSliders() end)
     
     RunService.RenderStepped:Connect(function()
         if Config[rainbowKey] then
@@ -699,8 +742,15 @@ local P1 = CreatePage("Aim")
 CreateSection("基础设置", P1)
 CreateSlider("灵敏度", "控制准星跟随目标的平滑程度，数值越低越平滑，越高越生硬", P1, 0, 100, Config.Sensitivity, function(v) Config.Sensitivity = v end)
 CreateCycleButton("锁定模式", "选择通过旋转角色身体还是仅移动相机视角来锁定", P1, {"人物", "镜头"}, Config.LockMode == "Character" and 1 or 2, function(o) Config.LockMode = (o == "人物") and "Character" or "Camera" end)
-CreateCycleButton("瞄准部位", "自动锁定目标的身体部位", P1, {"躯干", "头部"}, Config.AimPart == "Torso" and 1 or 2, function(o) Config.AimPart = (o == "躯干") and "Torso" or "Head" end)
+CreateCycleButton("瞄准部位", "自动锁定目标的身体部位", P1, {"躯干", "头部", "手臂", "腿部", "随机"}, Config.AimPart == "Torso" and 1 or 2, function(o) 
+    if o == "躯干" then Config.AimPart = "Torso"
+    elseif o == "头部" then Config.AimPart = "Head"
+    elseif o == "手臂" then Config.AimPart = "Arms"
+    elseif o == "腿部" then Config.AimPart = "Legs"
+    else Config.AimPart = "Random" end
+end)
 CreateCycleButton("锁定行为", "单次按下切换开关，或需要按住按键保持锁定", P1, {"单次", "连续"}, Config.ContinuousLock and 2 or 1, function(o) Config.ContinuousLock = (o == "连续") end)
+CreateSlider("爆头几率", "当瞄准部位为躯干且目标头部可见时，有一定概率(0-100%)强制瞄准头部", P1, 0, 100, Config.HeadshotChance, function(v) Config.HeadshotChance = v end)
 
 CreateSection("高级逻辑", P1)
 CreateCycleButton("目标优先级", "选择自动选取目标的逻辑：准星最近、血量最低或距离最近", P1, {"准星最近", "血量最低", "距离最近"}, 1, function(o) 
@@ -716,14 +766,23 @@ CreateSlider("随机偏移", "在瞄准点周围增加随机抖动范围", P1, 0
 CreateSlider("手抖强度", "模拟鼠标手抖效果，增加不规则运动", P1, 0, 10, Config.ShakePower, function(v) Config.ShakePower = v end)
 CreateSlider("失误概率", "随机停止锁定以模拟玩家失误(0-100%)", P1, 0, 100, Config.MissChance, function(v) Config.MissChance = v end)
 CreateSlider("人类延迟", "锁定前的反应时间(秒)", P1, 0, 1, Config.ReactionDelay, function(v) Config.ReactionDelay = v end)
-CreateCycleButton("平滑曲线", "准星移动的数学轨迹模型", P1, {"线性", "正弦", "二次方"}, 1, function(o) 
+CreateCycleButton("平滑曲线", "准星移动的数学轨迹模型", P1, {"线性", "正弦", "二次方", "指数", "弹性", "圆形"}, 1, function(o) 
     if o == "线性" then Config.SmoothnessCurve = "Linear"
     elseif o == "正弦" then Config.SmoothnessCurve = "Sine"
-    else Config.SmoothnessCurve = "Quad" end
+    elseif o == "二次方" then Config.SmoothnessCurve = "Quad"
+    elseif o == "指数" then Config.SmoothnessCurve = "Expo"
+    elseif o == "弹性" then Config.SmoothnessCurve = "Elastic"
+    else Config.SmoothnessCurve = "Circ" end
 end)
 
 CreateSection("预判设置", P1)
 CreateCycleButton("启用预判", "根据目标运动轨迹预测其未来位置", P1, {"关闭", "开启"}, 1, function(o) Config.PredictionEnabled = (o == "开启") end)
+CreateCycleButton("预判算法", "轨迹计算模型", P1, {"标准", "贝塞尔", "动量", "Kalman"}, 1, function(o) 
+    if o == "标准" then Config.PredictionStyle = "Standard"
+    elseif o == "贝塞尔" then Config.PredictionStyle = "Bezier"
+    elseif o == "动量" then Config.PredictionStyle = "Momentum"
+    else Config.PredictionStyle = "Kalman" end
+end)
 CreateCycleButton("预判类型", "自动计算或手动设置固定值", P1, {"手动", "自动"}, 1, function(o) Config.SmartPrediction = (o == "自动") end)
 CreateSlider("预判数值", "手动预判系数(时间/距离)", P1, 0, 5, Config.PredictionAmount, function(v) if not Config.SmartPrediction then Config.PredictionAmount = v end end, true)
 CreateCycleButton("加速度预测", "计算目标速度变化率以提高精准度", P1, {"关闭", "开启"}, 1, function(o) Config.AccelerationPrediction = (o == "开启") end)
@@ -757,6 +816,7 @@ local P3 = CreatePage("Misc")
 CreateSection("通知系统", P3)
 CreateCycleButton("启用通知", "在屏幕上方显示灵动岛风格通知", P3, {"关闭", "开启"}, 2, function(o) Config.NotificationEnabled = (o == "开启") end)
 CreateSlider("通知时长", "通知显示的持续时间(秒)", P3, 0.5, 5, Config.NotificationDuration, function(v) Config.NotificationDuration = v end)
+CreateSlider("通知冷却", "两次通知之间的最小间隔", P3, 0, 5, Config.NotificationCooldown, function(v) Config.NotificationCooldown = v end)
 CreateInputBox("锁定提示词", "自定义锁定时显示的文本", P3, Config.TextLocked, function(t) Config.TextLocked = t end)
 CreateInputBox("解锁提示词", "自定义解锁时显示的文本", P3, Config.TextUnlocked, function(t) Config.TextUnlocked = t end)
 CreateInputBox("丢失提示词", "自定义丢失目标时显示的文本", P3, Config.TextLost, function(t) Config.TextLost = t end)
@@ -764,6 +824,7 @@ CreateInputBox("丢失提示词", "自定义丢失目标时显示的文本", P3,
 CreateSection("过滤设置", P3)
 CreateCycleButton("队伍检查", "不锁定同一队伍的玩家", P3, {"关闭", "开启"}, 1, function(o) Config.TeamCheck = (o == "开启") end)
 CreateCycleButton("掩体检测", "仅锁定可见(无遮挡)的目标", P3, {"关闭", "开启"}, 1, function(o) Config.CoverCheck = (o == "开启") end)
+CreateCycleButton("多点检测", "检测目标头部/躯干/四肢", P3, {"关闭", "开启"}, 1, function(o) Config.MultiPointCheck = (o == "开启") end)
 CreateSlider("最大距离", "允许锁定的最远距离", P3, 100, 5000, Config.MaxDistance, function(v) Config.MaxDistance = v end)
 
 CreateSection("界面设置", P3)
@@ -782,38 +843,75 @@ EditBtn.MouseButton1Click:Connect(function()
     end)
     ConfirmContainer.Visible = true
     isEditingPos = true
+    savedBtnPos = MainButton.Position
 end)
 
 local P4 = CreatePage("Lists")
+local P4Layout = P4:FindFirstChildOfClass("UIListLayout")
+if P4Layout then P4Layout.Padding = UDim.new(0, 10) end
+
+local TeamContainer = Instance.new("Frame", P4)
+TeamContainer.Size = UDim2.new(1, 0, 0, 0)
+TeamContainer.AutomaticSize = Enum.AutomaticSize.Y
+TeamContainer.BackgroundTransparency = 1
+TeamContainer.LayoutOrder = 1
+
 local ListContainer = Instance.new("Frame", P4)
-ListContainer.Size = UDim2.new(1, 0, 0.9, 0)
+ListContainer.Size = UDim2.new(1, 0, 0, 0)
+ListContainer.AutomaticSize = Enum.AutomaticSize.Y
 ListContainer.BackgroundTransparency = 1
+ListContainer.LayoutOrder = 2
+
+local ListLayoutHorizontal = Instance.new("UIListLayout", ListContainer)
+ListLayoutHorizontal.FillDirection = Enum.FillDirection.Horizontal
+ListLayoutHorizontal.SortOrder = Enum.SortOrder.LayoutOrder
+ListLayoutHorizontal.Padding = UDim.new(0.04, 0)
 
 local LeftPanel = Instance.new("Frame", ListContainer)
-LeftPanel.Size = UDim2.new(0.48, 0, 1, 0)
+LeftPanel.Size = UDim2.new(0.48, 0, 0, 0)
+LeftPanel.AutomaticSize = Enum.AutomaticSize.Y
 LeftPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+LeftPanel.LayoutOrder = 1
 Instance.new("UICorner", LeftPanel).CornerRadius = UDim.new(0, 4)
 
 local RightPanel = Instance.new("Frame", ListContainer)
-RightPanel.Size = UDim2.new(0.48, 0, 1, 0)
-RightPanel.Position = UDim2.new(0.52, 0, 0, 0)
+RightPanel.Size = UDim2.new(0.48, 0, 0, 0)
+RightPanel.AutomaticSize = Enum.AutomaticSize.Y
 RightPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+RightPanel.LayoutOrder = 2
 Instance.new("UICorner", RightPanel).CornerRadius = UDim.new(0, 4)
 
-local function BuildListPanel(parent, title, listRef, otherListRef, color, enableKey)
-    local H = Instance.new("TextLabel", parent)
+local RefreshFuncs = {}
+
+local function BuildListPanel(parent, title, listRef, otherListRef, color, enableKey, refName)
+    local MainFrame = Instance.new("Frame", parent)
+    MainFrame.Size = UDim2.new(1, 0, 0, 0)
+    MainFrame.AutomaticSize = Enum.AutomaticSize.Y
+    MainFrame.BackgroundTransparency = 1
+    
+    local Layout = Instance.new("UIListLayout", MainFrame)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Padding = UDim.new(0, 2)
+    
+    local HeaderFrame = Instance.new("Frame", MainFrame)
+    HeaderFrame.Size = UDim2.new(1, 0, 0, 28)
+    HeaderFrame.BackgroundTransparency = 1
+    HeaderFrame.LayoutOrder = 1
+    
+    local H = Instance.new("TextLabel", HeaderFrame)
     H.Text = title
-    H.Size = UDim2.new(0.6, 0, 0, 24)
+    H.Size = UDim2.new(0.6, 0, 1, 0)
     H.BackgroundTransparency = 1
     H.TextColor3 = Color3.fromRGB(150, 150, 150)
     H.Font = Enum.Font.GothamBold
     H.TextSize = 9
     H.TextXAlignment = Enum.TextXAlignment.Left
-    H.Position = UDim2.new(0, 4, 0, 0)
+    H.Position = UDim2.new(0, 6, 0, 0)
     
-    local Toggle = Instance.new("TextButton", parent)
+    local Toggle = Instance.new("TextButton", HeaderFrame)
     Toggle.Size = UDim2.new(0, 24, 0, 14)
-    Toggle.Position = UDim2.new(1, -28, 0, 5)
+    Toggle.AnchorPoint = Vector2.new(1, 0.5)
+    Toggle.Position = UDim2.new(1, -6, 0.5, 0)
     Toggle.BackgroundColor3 = Config[enableKey] and color or Color3.fromRGB(40, 40, 40)
     Toggle.Text = ""
     Instance.new("UICorner", Toggle).CornerRadius = UDim.new(0, 4)
@@ -823,37 +921,57 @@ local function BuildListPanel(parent, title, listRef, otherListRef, color, enabl
         Toggle.BackgroundColor3 = Config[enableKey] and color or Color3.fromRGB(40, 40, 40)
     end)
     
-    local AddBtn = Instance.new("TextButton", parent)
-    AddBtn.Size = UDim2.new(1, -4, 0, 16)
-    AddBtn.Position = UDim2.new(0, 2, 0, 24)
+    local Scroll = Instance.new("ScrollingFrame", MainFrame)
+    Scroll.Size = UDim2.new(1, -4, 0, 80)
+    Scroll.BackgroundTransparency = 1
+    Scroll.ScrollBarThickness = 2
+    Scroll.LayoutOrder = 2
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.CanvasSize = UDim2.new(0,0,0,0)
+    local UIList = Instance.new("UIListLayout", Scroll)
+    UIList.SortOrder = Enum.SortOrder.Name
+    
+    local AddBtn = Instance.new("TextButton", MainFrame)
+    AddBtn.Size = UDim2.new(1, -8, 0, 18)
     AddBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
     AddBtn.Text = "添加玩家 ▼"
     AddBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
     AddBtn.TextSize = 9
     AddBtn.Font = Enum.Font.Gotham
+    AddBtn.LayoutOrder = 3
     Instance.new("UICorner", AddBtn).CornerRadius = UDim.new(0, 2)
     
-    local Scroll = Instance.new("ScrollingFrame", parent)
-    Scroll.Size = UDim2.new(1, -4, 1, -44)
-    Scroll.Position = UDim2.new(0, 2, 0, 44)
-    Scroll.BackgroundTransparency = 1
-    Scroll.ScrollBarThickness = 2
-    local UIList = Instance.new("UIListLayout", Scroll)
-    UIList.SortOrder = Enum.SortOrder.Name
-    
-    local Selector = Instance.new("ScrollingFrame", parent)
-    Selector.Size = UDim2.new(1, 0, 0, 120)
-    Selector.Position = UDim2.new(0, 0, 0, 42)
-    Selector.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Selector.Visible = false
-    Selector.ZIndex = 5
+    local Selector = Instance.new("ScrollingFrame", MainFrame)
+    Selector.Size = UDim2.new(1, 0, 0, 0)
+    Selector.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     Selector.ScrollBarThickness = 2
+    Selector.LayoutOrder = 4
+    Selector.ClipsDescendants = true
+    Selector.BackgroundTransparency = 1
+    Selector.ScrollBarImageTransparency = 1
+    
     local SelLayout = Instance.new("UIListLayout", Selector)
     SelLayout.SortOrder = Enum.SortOrder.Name
     
+    local selectorOpen = false
     AddBtn.MouseButton1Click:Connect(function()
-        Selector.Visible = not Selector.Visible
-        AddBtn.Text = Selector.Visible and "关闭 ▲" or "添加玩家 ▼"
+        selectorOpen = not selectorOpen
+        AddBtn.Text = selectorOpen and "关闭 ▲" or "添加玩家 ▼"
+        
+        local targetSize = selectorOpen and UDim2.new(1, 0, 0, 120) or UDim2.new(1, 0, 0, 0)
+        local targetTransparency = selectorOpen and 0 or 1
+        
+        TweenService:Create(Selector, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = targetSize,
+            BackgroundTransparency = targetTransparency,
+            ScrollBarImageTransparency = targetTransparency
+        }):Play()
+        
+        for _, child in pairs(Selector:GetChildren()) do
+            if child:IsA("TextButton") then
+                TweenService:Create(child, TweenInfo.new(0.3), {TextTransparency = targetTransparency, BackgroundTransparency = targetTransparency}):Play()
+            end
+        end
     end)
     
     local function RefreshView()
@@ -874,6 +992,7 @@ local function BuildListPanel(parent, title, listRef, otherListRef, color, enabl
             Lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
             Lbl.TextSize = 9
             Lbl.TextXAlignment = Enum.TextXAlignment.Left
+            Lbl.Position = UDim2.new(0, 4, 0, 0)
             
             local Del = Instance.new("TextButton", Row)
             Del.Size = UDim2.new(0, 16, 0, 16)
@@ -896,19 +1015,29 @@ local function BuildListPanel(parent, title, listRef, otherListRef, color, enabl
         for _, p in pairs(Players:GetPlayers()) do
             if p ~= LocalPlayer and not listRef[p.UserId] then
                 local B = Instance.new("TextButton", Selector)
-                B.Size = UDim2.new(1, -4, 0, 18)
+                B.Size = UDim2.new(1, 0, 0, 18)
                 B.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
                 B.Text = p.Name
                 B.TextColor3 = Color3.fromRGB(200, 200, 200)
                 B.TextSize = 9
                 B.ZIndex = 6
+                B.BackgroundTransparency = selectorOpen and 0 or 1
+                B.TextTransparency = selectorOpen and 0 or 1
                 
                 B.MouseButton1Click:Connect(function()
                     listRef[p.UserId] = true
                     otherListRef[p.UserId] = nil 
                     RefreshView()
-                    Selector.Visible = false
+                    if refName == "White" and RefreshFuncs.Black then RefreshFuncs.Black() end
+                    if refName == "Black" and RefreshFuncs.White then RefreshFuncs.White() end
+                    
+                    selectorOpen = false
                     AddBtn.Text = "添加玩家 ▼"
+                    TweenService:Create(Selector, TweenInfo.new(0.3), {
+                        Size = UDim2.new(1, 0, 0, 0),
+                        BackgroundTransparency = 1,
+                        ScrollBarImageTransparency = 1
+                    }):Play()
                 end)
             end
         end
@@ -918,11 +1047,169 @@ local function BuildListPanel(parent, title, listRef, otherListRef, color, enabl
     return RefreshView
 end
 
-local RefWhite = BuildListPanel(LeftPanel, "白名单", Config.Whitelist, Config.Blacklist, Color3.fromRGB(30, 160, 60), "WhitelistEnabled")
-local RefBlack = BuildListPanel(RightPanel, "黑名单", Config.Blacklist, Config.Whitelist, Color3.fromRGB(160, 30, 30), "BlacklistEnabled")
+local function BuildTeamListPanel()
+    local Wrapper = Instance.new("Frame", TeamContainer)
+    Wrapper.Size = UDim2.new(1, 0, 0, 0)
+    Wrapper.AutomaticSize = Enum.AutomaticSize.Y
+    Wrapper.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    Instance.new("UICorner", Wrapper).CornerRadius = UDim.new(0, 4)
+    
+    local Layout = Instance.new("UIListLayout", Wrapper)
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Padding = UDim.new(0, 2)
+
+    local HeaderFrame = Instance.new("Frame", Wrapper)
+    HeaderFrame.Size = UDim2.new(1, 0, 0, 28)
+    HeaderFrame.BackgroundTransparency = 1
+    HeaderFrame.LayoutOrder = 1
+
+    local H = Instance.new("TextLabel", HeaderFrame)
+    H.Text = "只锁定以下队伍"
+    H.Size = UDim2.new(0.6, 0, 1, 0)
+    H.BackgroundTransparency = 1
+    H.TextColor3 = Color3.fromRGB(150, 150, 150)
+    H.Font = Enum.Font.GothamBold
+    H.TextSize = 9
+    H.TextXAlignment = Enum.TextXAlignment.Left
+    H.Position = UDim2.new(0, 6, 0, 0)
+    
+    local Toggle = Instance.new("TextButton", HeaderFrame)
+    Toggle.Size = UDim2.new(0, 24, 0, 14)
+    Toggle.AnchorPoint = Vector2.new(1, 0.5)
+    Toggle.Position = UDim2.new(1, -6, 0.5, 0)
+    Toggle.BackgroundColor3 = Config.TeamWhitelistEnabled and Color3.fromRGB(30, 120, 215) or Color3.fromRGB(40, 40, 40)
+    Toggle.Text = ""
+    Instance.new("UICorner", Toggle).CornerRadius = UDim.new(0, 4)
+    
+    Toggle.MouseButton1Click:Connect(function()
+        Config.TeamWhitelistEnabled = not Config.TeamWhitelistEnabled
+        Toggle.BackgroundColor3 = Config.TeamWhitelistEnabled and Color3.fromRGB(30, 120, 215) or Color3.fromRGB(40, 40, 40)
+    end)
+    
+    local Scroll = Instance.new("ScrollingFrame", Wrapper)
+    Scroll.Size = UDim2.new(1, -4, 0, 60)
+    Scroll.BackgroundTransparency = 1
+    Scroll.ScrollBarThickness = 2
+    Scroll.LayoutOrder = 2
+    Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Scroll.CanvasSize = UDim2.new(0,0,0,0)
+    local UIList = Instance.new("UIListLayout", Scroll)
+    UIList.SortOrder = Enum.SortOrder.Name
+    
+    local AddBtn = Instance.new("TextButton", Wrapper)
+    AddBtn.Size = UDim2.new(1, -8, 0, 18)
+    AddBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    AddBtn.Text = "添加队伍 ▼"
+    AddBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    AddBtn.TextSize = 9
+    AddBtn.Font = Enum.Font.Gotham
+    AddBtn.LayoutOrder = 3
+    Instance.new("UICorner", AddBtn).CornerRadius = UDim.new(0, 2)
+    
+    local Selector = Instance.new("ScrollingFrame", Wrapper)
+    Selector.Size = UDim2.new(1, 0, 0, 0)
+    Selector.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    Selector.ScrollBarThickness = 2
+    Selector.LayoutOrder = 4
+    Selector.ClipsDescendants = true
+    Selector.BackgroundTransparency = 1
+    Selector.ScrollBarImageTransparency = 1
+    
+    local SelLayout = Instance.new("UIListLayout", Selector)
+    SelLayout.SortOrder = Enum.SortOrder.Name
+    
+    local selectorOpen = false
+    AddBtn.MouseButton1Click:Connect(function()
+        selectorOpen = not selectorOpen
+        AddBtn.Text = selectorOpen and "关闭 ▲" or "添加队伍 ▼"
+        
+        local targetSize = selectorOpen and UDim2.new(1, 0, 0, 100) or UDim2.new(1, 0, 0, 0)
+        local targetTransparency = selectorOpen and 0 or 1
+        
+        TweenService:Create(Selector, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = targetSize,
+            BackgroundTransparency = targetTransparency,
+            ScrollBarImageTransparency = targetTransparency
+        }):Play()
+        
+        for _, child in pairs(Selector:GetChildren()) do
+            if child:IsA("TextButton") then
+                TweenService:Create(child, TweenInfo.new(0.3), {TextTransparency = targetTransparency, BackgroundTransparency = targetTransparency}):Play()
+            end
+        end
+    end)
+    
+    local function RefreshView()
+        for _, c in pairs(Scroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+        for teamName, _ in pairs(Config.TeamWhitelist) do
+            local Row = Instance.new("Frame", Scroll)
+            Row.Size = UDim2.new(1, 0, 0, 18)
+            Row.BackgroundTransparency = 1
+            
+            local Lbl = Instance.new("TextLabel", Row)
+            Lbl.Text = teamName
+            Lbl.Size = UDim2.new(0.8, 0, 1, 0)
+            Lbl.BackgroundTransparency = 1
+            Lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+            Lbl.TextSize = 9
+            Lbl.TextXAlignment = Enum.TextXAlignment.Left
+            Lbl.Position = UDim2.new(0, 4, 0, 0)
+            
+            local Del = Instance.new("TextButton", Row)
+            Del.Size = UDim2.new(0, 16, 0, 16)
+            Del.Position = UDim2.new(1, -16, 0, 1)
+            Del.BackgroundColor3 = Color3.fromRGB(60, 30, 30)
+            Del.Text = "-"
+            Del.TextColor3 = Color3.fromRGB(200, 200, 200)
+            Del.TextSize = 10
+            Instance.new("UICorner", Del).CornerRadius = UDim.new(0, 2)
+            
+            Del.MouseButton1Click:Connect(function()
+                Config.TeamWhitelist[teamName] = nil
+                RefreshView()
+            end)
+        end
+    end
+    
+    local function RefreshSelector()
+        for _, c in pairs(Selector:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+        for _, t in pairs(Teams:GetTeams()) do
+            if not Config.TeamWhitelist[t.Name] then
+                local B = Instance.new("TextButton", Selector)
+                B.Size = UDim2.new(1, 0, 0, 18)
+                B.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                B.Text = t.Name
+                B.TextColor3 = t.TeamColor.Color
+                B.TextSize = 9
+                B.ZIndex = 6
+                B.BackgroundTransparency = selectorOpen and 0 or 1
+                B.TextTransparency = selectorOpen and 0 or 1
+                
+                B.MouseButton1Click:Connect(function()
+                    Config.TeamWhitelist[t.Name] = true
+                    RefreshView()
+                    selectorOpen = false
+                    AddBtn.Text = "添加队伍 ▼"
+                    TweenService:Create(Selector, TweenInfo.new(0.3), {
+                        Size = UDim2.new(1, 0, 0, 0),
+                        BackgroundTransparency = 1,
+                        ScrollBarImageTransparency = 1
+                    }):Play()
+                end)
+            end
+        end
+    end
+    
+    AddBtn.MouseButton1Click:Connect(RefreshSelector)
+    return RefreshView
+end
+
+RefreshFuncs.White = BuildListPanel(LeftPanel, "白名单", Config.Whitelist, Config.Blacklist, Color3.fromRGB(30, 160, 60), "WhitelistEnabled", "White")
+RefreshFuncs.Black = BuildListPanel(RightPanel, "黑名单", Config.Blacklist, Config.Whitelist, Color3.fromRGB(160, 30, 30), "BlacklistEnabled", "Black")
+BuildTeamListPanel()
 
 P4:GetPropertyChangedSignal("Visible"):Connect(function()
-    if P4.Visible then RefWhite(); RefBlack() end
+    if P4.Visible then RefreshFuncs.White(); RefreshFuncs.Black() end
 end)
 
 CreateTab("瞄准", "Aim")
@@ -936,6 +1223,14 @@ local lockedUserId = nil
 local visualEffect = nil
 local legitOffset = Vector3.zero
 local lastLockTime = 0
+local CharConnections = {}
+
+local function CleanupVisuals()
+    if visualEffect then
+        visualEffect:Destroy()
+        visualEffect = nil
+    end
+end
 
 local function UpdatePanel(show)
     if show then
@@ -1022,7 +1317,7 @@ MainButton.InputEnded:Connect(function(input)
                         currentTarget = nil
                         lockedUserId = nil
                         TargetState = {Velocity = Vector3.zero, Acceleration = Vector3.zero, LastUpdate = 0}
-                        if visualEffect then visualEffect.Enabled = false end
+                        CleanupVisuals()
                     end
                 end
             end
@@ -1034,24 +1329,25 @@ ConfirmBtn.MouseButton1Click:Connect(function() isEditingPos = false; ConfirmCon
 CancelBtn.MouseButton1Click:Connect(function() 
     isEditingPos = false 
     ConfirmContainer.Visible = false 
-    MainButton.Position = UDim2.new(0.8, -20, 0.6, -20) 
+    MainButton.Position = savedBtnPos or UDim2.new(0.8, -20, 0.6, -20) 
 end)
 
 local function EnsureBoxVisuals(targetChar)
-    if not Config.BoxVisible then if visualEffect then visualEffect.Enabled = false end return end
-    if not targetChar then if visualEffect then visualEffect.Enabled = false end return end
+    if not Config.BoxVisible then CleanupVisuals() return end
+    if not targetChar then CleanupVisuals() return end
     local root = targetChar:FindFirstChild("HumanoidRootPart")
     local torso = targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("Torso") or root
-    if not root or not torso then if visualEffect then visualEffect.Enabled = false end return end
+    if not root or not torso then CleanupVisuals() return end
     
     if not visualEffect or visualEffect.Parent ~= ScreenGui then
-        if visualEffect then visualEffect:Destroy() end
+        CleanupVisuals()
         local bb = Instance.new("BillboardGui", ScreenGui)
         bb.Name = "LockBox"
         bb.Adornee = torso
         bb.AlwaysOnTop = true
         bb.Size = UDim2.new(0, 0, 0, 0)
         local container = Instance.new("Frame", bb)
+        container.Name = "MainFrame"
         container.Size = UDim2.new(1,0,1,0)
         container.BackgroundTransparency = 1
         container.AnchorPoint = Vector2.new(0.5,0.5)
@@ -1077,24 +1373,87 @@ local function EnsureBoxVisuals(targetChar)
         visualEffect.Size = UDim2.new(0, size, 0, size)
     end
     
-    for _, v in pairs(visualEffect.Frame:GetChildren()) do
-        v.BackgroundColor3 = Config.BoxColor
-        v.BackgroundTransparency = Config.BoxTransparency
-        if v.Size.X.Offset == 1 or v.Size.X.Offset > 1 then 
-             if v.Size.Y.Scale > 0 then v.Size = UDim2.new(0, Config.BoxThickness, 0.43, 0) 
-             else v.Size = UDim2.new(0.43, 0, 0, Config.BoxThickness) end
+    local mf = visualEffect:FindFirstChild("MainFrame")
+    if mf then
+        for _, v in pairs(mf:GetChildren()) do
+            v.BackgroundColor3 = Config.BoxColor
+            v.BackgroundTransparency = Config.BoxTransparency
+            if v.Size.X.Offset == 1 or v.Size.X.Offset > 1 then 
+                 if v.Size.Y.Scale > 0 then v.Size = UDim2.new(0, Config.BoxThickness, 0.43, 0) 
+                 else v.Size = UDim2.new(0.43, 0, 0, Config.BoxThickness) end
+            end
         end
+        mf.Rotation = mf.Rotation + Config.BoxSpeed
     end
-    visualEffect.Frame.Rotation = visualEffect.Frame.Rotation + Config.BoxSpeed
 end
 
 local function CheckCover(model)
-    local root, head = model:FindFirstChild("HumanoidRootPart"), model:FindFirstChild("Head")
+    local root = model:FindFirstChild("HumanoidRootPart")
+    local head = model:FindFirstChild("Head")
     if not root or not head then return false end
+    
+    local partsToCheck = {head}
+    if Config.MultiPointCheck then
+        table.insert(partsToCheck, root)
+        table.insert(partsToCheck, model:FindFirstChild("Left Arm") or model:FindFirstChild("LeftUpperArm"))
+        table.insert(partsToCheck, model:FindFirstChild("Right Arm") or model:FindFirstChild("RightUpperArm"))
+        table.insert(partsToCheck, model:FindFirstChild("Left Leg") or model:FindFirstChild("LeftUpperLeg"))
+        table.insert(partsToCheck, model:FindFirstChild("Right Leg") or model:FindFirstChild("RightUpperLeg"))
+    end
+    
+    local visible = false
     local params = RaycastParams.new()
     params.FilterDescendantsInstances = {LocalPlayer.Character, model}
     params.FilterType = Enum.RaycastFilterType.Exclude
-    return not workspace:Raycast(Camera.CFrame.Position, (head.Position - Camera.CFrame.Position), params)
+    
+    for _, part in pairs(partsToCheck) do
+        if part then
+            if not workspace:Raycast(Camera.CFrame.Position, (part.Position - Camera.CFrame.Position), params) then
+                visible = true
+                break
+            end
+        end
+    end
+    return visible
+end
+
+local function GetTargetPart(char)
+    if not char then return "Torso" end
+    
+    if Config.AimPart == "Head" then return "Head" end
+    if Config.AimPart == "Torso" then
+        if Config.HeadshotChance > 0 and char:FindFirstChild("Head") and math.random(0,100) <= Config.HeadshotChance then
+            if not Config.CoverCheck or CheckCover(char) then return "Head" end
+        end
+        return "HumanoidRootPart"
+    end
+    
+    local parts = {}
+    if Config.AimPart == "Random" then
+        for _, v in pairs(char:GetChildren()) do if v:IsA("BasePart") then table.insert(parts, v.Name) end end
+    elseif Config.AimPart == "Arms" then
+        parts = {"Left Arm","Right Arm","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm"}
+    elseif Config.AimPart == "Legs" then
+        parts = {"Left Leg","Right Leg","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg"}
+    end
+    
+    local visibleParts = {}
+    for _, name in ipairs(parts) do
+        local p = char:FindFirstChild(name)
+        if p then table.insert(visibleParts, name) end
+    end
+    
+    if #visibleParts > 0 then
+        local mousePos = UserInputService:GetMouseLocation()
+        table.sort(visibleParts, function(a,b)
+            local p1 = Camera:WorldToViewportPoint(char[a].Position)
+            local p2 = Camera:WorldToViewportPoint(char[b].Position)
+            return (Vector2.new(p1.X, p1.Y) - mousePos).Magnitude < (Vector2.new(p2.X, p2.Y) - mousePos).Magnitude
+        end)
+        return visibleParts[1]
+    end
+    
+    return "Torso"
 end
 
 local function GetSortedTarget()
@@ -1108,6 +1467,7 @@ local function GetSortedTarget()
         if p ~= LocalPlayer and p.Character then
             if Config.WhitelistEnabled and not Config.Whitelist[p.UserId] then continue end
             if Config.BlacklistEnabled and Config.Blacklist[p.UserId] then continue end
+            if Config.TeamWhitelistEnabled and p.Team and not Config.TeamWhitelist[p.Team.Name] then continue end
             
             if not (Config.TeamCheck and p.Team == LocalPlayer.Team) then
                 local char = p.Character
@@ -1151,13 +1511,16 @@ local function GetSortedTarget()
     return targets[1].Char
 end
 
+local lastSearch = 0
+local lastTarget = nil
+
 RunService.RenderStepped:Connect(function()
     local dt = RunService.RenderStepped:Wait()
-    local hue = tick() % 5 / 5
-    local rainbowC = Color3.fromHSV(hue, 1, 1)
-    if Config.RainbowFOV then Config.FOVColor = rainbowC end
-    if Config.RainbowBox then Config.BoxColor = rainbowC end
-    if Config.RainbowRing then Config.RingColor = rainbowC end
+    local now = tick()
+    
+    if Config.RainbowFOV then Config.FOVColor = Color3.fromHSV(now % 5 / 5, 1, 1) end
+    if Config.RainbowBox then Config.BoxColor = Color3.fromHSV(now % 5 / 5, 1, 1) end
+    if Config.RainbowRing then Config.RingColor = Color3.fromHSV(now % 5 / 5, 1, 1) end
     
     FOVStroke.Color = Config.FOVColor
     RingStroke.Color = Config.RingColor
@@ -1167,12 +1530,27 @@ RunService.RenderStepped:Connect(function()
     end
     
     if currentTarget and currentTarget:FindFirstChild("HumanoidRootPart") then
-        local now = tick()
         if TargetState.LastUpdate ~= 0 then
             local timeDelta = now - TargetState.LastUpdate
             if timeDelta > 0 then
+                local pos = currentTarget.HumanoidRootPart.Position
                 local currentVel = currentTarget.HumanoidRootPart.AssemblyLinearVelocity
                 local newAccel = (currentVel - TargetState.Velocity) / timeDelta
+                
+                if Config.PredictionStyle == "Kalman" then
+                    if currentTarget ~= lastTarget then
+                        Kalman.X = pos
+                        Kalman.P = 1
+                        lastTarget = currentTarget
+                    end
+                    Kalman.K = Kalman.P / (Kalman.P + Kalman.R)
+                    Kalman.X = Kalman.X + Kalman.K * (pos - Kalman.X)
+                    Kalman.P = (1 - Kalman.K) * Kalman.P + Kalman.Q
+                    TargetState.PreviousPosition = Kalman.X
+                else
+                    TargetState.PreviousPosition = pos
+                end
+                
                 if newAccel.Magnitude > 1000 then newAccel = Vector3.zero end
                 TargetState.Acceleration = TargetState.Acceleration:Lerp(newAccel, 0.1)
                 TargetState.Velocity = currentVel
@@ -1180,39 +1558,50 @@ RunService.RenderStepped:Connect(function()
         end
         TargetState.LastUpdate = now
     else
-        TargetState = {Velocity = Vector3.zero, Acceleration = Vector3.zero, LastUpdate = 0}
+        TargetState = {Velocity = Vector3.zero, Acceleration = Vector3.zero, LastUpdate = 0, PreviousPosition = Vector3.zero}
     end
 
+    local usedPrediction = Config.PredictionAmount
+
     if Config.SmartPrediction and Config.PredictionEnabled then
-        local ping = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+        local ping = 100
+        local success, result = pcall(function()
+             if StatsService.Network:FindFirstChild("ServerStatsItem") and StatsService.Network.ServerStatsItem:FindFirstChild("Data Ping") then
+                 return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+             end
+        end)
+        if success and result then ping = result end
         local base = ping / 1000 
         if currentTarget and currentTarget:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character then
             local dist = (currentTarget.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
             base = base + (dist / Config.ProjectileSpeed)
         end
-        Config.PredictionAmount = math.clamp(base, 0, 5)
+        usedPrediction = math.clamp(base, 0, 5)
     end
     
     if isLocked then
-        if Config.DynamicSwitching then
-            local potential = GetSortedTarget()
-            if potential and potential ~= currentTarget then
-                currentTarget = potential
-                lockedUserId = Players:GetPlayerFromCharacter(potential).UserId
-                if Config.LegitMode then
-                    legitOffset = Vector3.new(math.random(-Config.AimOffset, Config.AimOffset), math.random(-Config.AimOffset, Config.AimOffset), math.random(-Config.AimOffset, Config.AimOffset))
-                    lastLockTime = tick()
+        if now - lastSearch > 0.1 then
+            lastSearch = now
+            if Config.DynamicSwitching then
+                local potential = GetSortedTarget()
+                if potential and potential ~= currentTarget then
+                    currentTarget = potential
+                    lockedUserId = Players:GetPlayerFromCharacter(potential).UserId
+                    if Config.LegitMode then
+                        legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
+                        lastLockTime = now
+                    end
                 end
             end
-        end
 
-        if not lockedUserId then
-            local t = GetSortedTarget()
-            if t then 
-                lockedUserId = Players:GetPlayerFromCharacter(t).UserId 
-                if Config.LegitMode then
-                    legitOffset = Vector3.new(math.random(-Config.AimOffset, Config.AimOffset), math.random(-Config.AimOffset, Config.AimOffset), math.random(-Config.AimOffset, Config.AimOffset))
-                    lastLockTime = tick()
+            if not lockedUserId then
+                local t = GetSortedTarget()
+                if t then 
+                    lockedUserId = Players:GetPlayerFromCharacter(t).UserId 
+                    if Config.LegitMode then
+                        legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
+                        lastLockTime = now
+                    end
                 end
             end
         end
@@ -1225,7 +1614,7 @@ RunService.RenderStepped:Connect(function()
                 else
                      currentTarget = nil 
                      ShowNotification(Config.TextLost, "Warn")
-                     if visualEffect then visualEffect.Enabled = false end
+                     CleanupVisuals()
                 end
             else
                 local char = p.Character
@@ -1247,8 +1636,8 @@ RunService.RenderStepped:Connect(function()
                         if nt then 
                             lockedUserId = Players:GetPlayerFromCharacter(nt).UserId; char = nt 
                             if Config.LegitMode then
-                                legitOffset = Vector3.new(math.random(-Config.AimOffset, Config.AimOffset), math.random(-Config.AimOffset, Config.AimOffset), math.random(-Config.AimOffset, Config.AimOffset))
-                                lastLockTime = tick()
+                                legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
+                                lastLockTime = now
                             end
                         else 
                             lockedUserId = nil; currentTarget = nil
@@ -1257,45 +1646,51 @@ RunService.RenderStepped:Connect(function()
                     else
                          currentTarget = nil
                          ShowNotification("目标无效", "Warn")
-                         if visualEffect then visualEffect.Enabled = false end
+                         CleanupVisuals()
                     end
                 else
                     currentTarget = char
                 end
                 
-                if currentTarget and currentTarget:FindFirstChild(Config.AimPart) then
+                local finalPart = GetTargetPart(currentTarget)
+
+                if currentTarget and currentTarget:FindFirstChild(finalPart) then
                     EnsureBoxVisuals(currentTarget)
                     
                     if Config.LegitMode then
-                        if (tick() - lastLockTime < Config.ReactionDelay) then return end
+                        if (now - lastLockTime < Config.ReactionDelay) then return end
                         if math.random(0, 100) < Config.MissChance then return end
                     end
                     
-                    local aimPos = currentTarget[Config.AimPart].Position
+                    local aimPos = currentTarget[finalPart].Position
                     
                     if Config.LegitMode then 
                         aimPos = aimPos + legitOffset 
                         if Config.ShakePower > 0 then
                             aimPos = aimPos + Vector3.new(
-                                math.random(-Config.ShakePower, Config.ShakePower)/10, 
-                                math.random(-Config.ShakePower, Config.ShakePower)/10, 
-                                math.random(-Config.ShakePower, Config.ShakePower)/10
+                                (math.random() - 0.5) * 2 * Config.ShakePower,
+                                (math.random() - 0.5) * 2 * Config.ShakePower,
+                                (math.random() - 0.5) * 2 * Config.ShakePower
                             )
                         end
                     end
                     
                     if Config.PredictionEnabled and currentTarget:FindFirstChild("HumanoidRootPart") then
-                        local t = Config.PredictionAmount
+                        local t = usedPrediction
                         local vel = TargetState.Velocity
                         
-                        if Config.SmartPrediction then
-                            local dist = (currentTarget.HumanoidRootPart.Position - Camera.CFrame.Position).Magnitude
-                            t = dist / Config.ProjectileSpeed
+                        if Config.PredictionStyle == "Bezier" then
+                             local p0 = aimPos
+                             local p1 = aimPos + vel * (t/2) + Vector3.new(0,5,0)
+                             local p2 = aimPos + vel * t
+                             aimPos = (1-0.5)^2 * p0 + 2*(1-0.5)*0.5 * p1 + 0.5^2 * p2
+                        elseif Config.PredictionStyle == "Momentum" then
+                             aimPos = aimPos + (vel * t) + (0.5 * TargetState.Acceleration * (t^2))
+                        else
+                             aimPos = aimPos + (vel * t)
                         end
-
-                        aimPos = aimPos + (vel * t)
                         
-                        if Config.AccelerationPrediction then
+                        if Config.AccelerationPrediction and Config.PredictionStyle ~= "Momentum" then
                             aimPos = aimPos + (0.5 * TargetState.Acceleration * (t^2))
                         end
                         
@@ -1306,10 +1701,17 @@ RunService.RenderStepped:Connect(function()
                     local alpha = (100 - rawSens) / 100
                     
                     if Config.LegitMode then
+                        local x = math.clamp(alpha, 0, 1)
                         if Config.SmoothnessCurve == "Sine" then
-                            alpha = math.sin(alpha * math.pi / 2)
+                            alpha = math.sin(x * math.pi / 2)
                         elseif Config.SmoothnessCurve == "Quad" then
-                            alpha = alpha * alpha
+                            alpha = x * x
+                        elseif Config.SmoothnessCurve == "Expo" then
+                            alpha = 2^(10 * (x - 1))
+                        elseif Config.SmoothnessCurve == "Circ" then
+                            alpha = 1 - math.sqrt(1 - x^2)
+                        elseif Config.SmoothnessCurve == "Elastic" then
+                             alpha = math.sin(13 * math.pi / 2 * x) * 2^(10 * (x - 1))
                         end
                     end
                     
@@ -1325,12 +1727,12 @@ RunService.RenderStepped:Connect(function()
                         Camera.CFrame = curCF:Lerp(targetCF, alpha)
                     end
                 else
-                    if visualEffect then visualEffect.Enabled = false end
+                    CleanupVisuals()
                 end
             end
         end
     else
-        if visualEffect then visualEffect.Enabled = false end
+        CleanupVisuals()
         lockedUserId = nil
         currentTarget = nil
         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
