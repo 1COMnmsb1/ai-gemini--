@@ -70,7 +70,7 @@ local Config = {
     TeamBlacklistEnabled = false,
     TeamBlacklist = {},
     PriorityMode = "准心优先",
-    DynamicSwitching = false,
+    StickyAiming = true,
     BoxSize = 5.5,
     BoxThickness = 1,
     BoxSpeed = 1,
@@ -166,7 +166,6 @@ local function SetupQuickButton(btn, name, yOffset, toggleRef, sizeConfig, trans
 end
 
 local function UpdateQuickButtons()
-    -- Aim Button Update
     if Config.AimQuickButtonEnabled then
         AimButton.Visible = true
         AimButton.Size = UDim2.fromOffset(Config.AimQuickButtonSize, Config.AimQuickButtonSize)
@@ -180,7 +179,6 @@ local function UpdateQuickButtons()
         AimButton.Visible = false
     end
 
-    -- Silent Button Update
     if Config.SilentQuickButtonEnabled then
         SilentButton.Visible = true
         SilentButton.Size = UDim2.fromOffset(Config.SilentQuickButtonSize, Config.SilentQuickButtonSize)
@@ -270,7 +268,8 @@ local function CleanupVisuals()
 end
 
 local Window = Library:CreateWindow({
-    Name = "通用瞄准",
+    Title = "通用瞄准",
+    Footer = "作者:卓一航",
     Theme = "Dark",
     Accent = "#00ff00"
 })
@@ -315,10 +314,10 @@ AimLogicGroup:AddDropdown('PriorityMode', {
     Values = {"准心优先", "最低血量", "最近距离"},
     Callback = function(Value) Config.PriorityMode = Value end
 })
-AimLogicGroup:AddToggle('DynamicSwitching', {
-    Text = '动态切换目标',
-    Default = Config.DynamicSwitching,
-    Callback = function(Value) Config.DynamicSwitching = Value end
+AimLogicGroup:AddToggle('StickyAiming', {
+    Text = '粘性瞄准',
+    Default = Config.StickyAiming,
+    Callback = function(Value) Config.StickyAiming = Value end
 })
 AimLogicGroup:AddToggle('WallCheckFallback', {
     Text = '掩体回退 (自动打身)',
@@ -407,7 +406,6 @@ SilentGroup:AddDropdown('BulletTPMode', {
     Callback = function(Value) Config.BulletTPMode = Value end
 })
 
--- Silent Quick Button Config
 SilentGroup:AddToggle('SilentQuickButtonEnabled', {
     Text = '启用静默快捷按钮',
     Default = Config.SilentQuickButtonEnabled,
@@ -1226,7 +1224,7 @@ local function GetSortedTarget()
                 local dist = (root.Position - myRoot.Position).Magnitude
                 if dist <= Config.MaxDistance then
                     local sPos, onScreen = Camera:WorldToViewportPoint(root.Position)
-                    if onScreen then
+                    if (not Config.UseFOV) or onScreen then
                         if not Config.CoverCheck or CheckCover(char) then
                             local fovDist = (Vector2.new(sPos.X, sPos.Y) - mousePos).Magnitude
                             if not Config.UseFOV or fovDist <= Config.FOVRadius then
@@ -1309,7 +1307,6 @@ AimGeneralGroup:AddToggle('AimEnabled', {
     NoUI = false,
 })
 
--- Aim Quick Button Config
 AimGeneralGroup:AddToggle('AimQuickButtonEnabled', {
     Text = '启用自瞄快捷按钮',
     Default = Config.AimQuickButtonEnabled,
@@ -1445,20 +1442,6 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     if isLocked and Camera then
         if now - lastSearch > 0.1 then
             lastSearch = now
-            if Config.DynamicSwitching then
-                local potential = GetSortedTarget()
-                if potential and potential ~= currentTarget then
-                    currentTarget = potential
-                    if Players:GetPlayerFromCharacter(potential) then
-                        lockedUserId = Players:GetPlayerFromCharacter(potential).UserId
-                        lastLockTime = now
-                        if Config.LegitMode then
-                            legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
-                        end
-                    end
-                end
-            end
-
             if not lockedUserId then
                 local t = GetSortedTarget()
                 if t then 
