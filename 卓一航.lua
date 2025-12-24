@@ -51,7 +51,6 @@ local Config = {
     BoxVisible = false,
     BoxColor = Color3.fromRGB(255, 255, 255),
     BoxShape = "方框",
-    BoxBreathing = false,
     RingColor = Color3.fromRGB(255, 255, 255),
     TracerVisible = false,
     TracerColor = Color3.fromRGB(255, 255, 255),
@@ -70,7 +69,7 @@ local Config = {
     TeamBlacklistEnabled = false,
     TeamBlacklist = {},
     PriorityMode = "准心优先",
-    StickyAiming = true,
+    StickyAiming = false,
     BoxSize = 5.5,
     BoxThickness = 1,
     BoxSpeed = 1,
@@ -591,11 +590,6 @@ BoxGroup:AddToggle('RainbowBox', {
     Default = Config.RainbowBox,
     Callback = function(Value) Config.RainbowBox = Value end
 })
-BoxGroup:AddToggle('BoxBreathing', {
-    Text = '呼吸灯效果',
-    Default = Config.BoxBreathing,
-    Callback = function(Value) Config.BoxBreathing = Value end
-})
 
 local TracerGroup = VisualsTab:AddLeftGroupbox("追踪线样式")
 TracerGroup:AddToggle('TracerVisible', {
@@ -734,29 +728,42 @@ local function GetPlayer(String)
     if not String or String == "" then return nil end
     local Exact = Players:FindFirstChild(String)
     if Exact then return Exact end
-    String = String:lower()
+    
+    local found = {}
+    local lowerStr = String:lower()
+    
     for _, p in ipairs(Players:GetPlayers()) do
-        if p.Name:lower():sub(1, #String) == String then
-            return p
-        end
-        if p.DisplayName:lower():sub(1, #String) == String then
-            return p
+        if p.Name:lower():find(lowerStr, 1, true) or p.DisplayName:lower():find(lowerStr, 1, true) then
+            table.insert(found, p)
         end
     end
-    return nil
+    
+    if #found == 1 then
+        return found[1]
+    else
+        return nil
+    end
 end
 
 local function GetTeam(String)
     if not String or String == "" then return nil end
     local Exact = Teams:FindFirstChild(String)
     if Exact then return Exact end
-    String = String:lower()
+    
+    local found = {}
+    local lowerStr = String:lower()
+    
     for _, t in ipairs(Teams:GetTeams()) do
-        if t.Name:lower():sub(1, #String) == String then
-            return t
+        if t.Name:lower():find(lowerStr, 1, true) then
+            table.insert(found, t)
         end
     end
-    return nil
+    
+    if #found == 1 then
+        return found[1]
+    else
+        return nil
+    end
 end
 
 local PlayerListGroup = ListsTab:AddLeftGroupbox("玩家名单管理")
@@ -787,7 +794,7 @@ PlayerListGroup:AddInput('AddWhitelist', {
             end
             UpdateListDropdowns()
         else
-            Library:Notify("添加错误 " .. Value .. " 不存在")
+            Library:Notify("未找到唯一玩家，请检查输入")
         end
     end
 })
@@ -819,7 +826,7 @@ PlayerListGroup:AddInput('AddBlacklist', {
             end
             UpdateListDropdowns()
         else
-            Library:Notify("添加错误 " .. Value .. " 不存在")
+            Library:Notify("未找到唯一玩家，请检查输入")
         end
     end
 })
@@ -851,7 +858,7 @@ TeamListGroup:AddInput('AddTeamWhitelist', {
             end
             UpdateListDropdowns()
         else
-            Library:Notify("添加错误 " .. Value .. " 不存在")
+            Library:Notify("未找到唯一队伍，请检查输入")
         end
     end
 })
@@ -882,7 +889,7 @@ TeamListGroup:AddInput('AddTeamBlacklist', {
             end
             UpdateListDropdowns()
         else
-            Library:Notify("添加错误 " .. Value .. " 不存在")
+            Library:Notify("未找到唯一队伍，请检查输入")
         end
     end
 })
@@ -932,10 +939,6 @@ local function EnsureBoxVisuals(targetChar)
         visualEffect.Enabled = true
         visualEffect.Adornee = torso
         local size = torso.Size.X * Config.BoxSize
-        if Config.BoxBreathing then
-             local scale = 1 + math.sin(tick() * 5) * 0.1
-             size = size * scale
-        end
         visualEffect.Size = UDim2.new(0, size, 0, size)
     end
     
@@ -1002,10 +1005,6 @@ local function EnsureBoxVisuals(targetChar)
         end
         
         mf.Rotation = mf.Rotation + Config.BoxSpeed
-        local breathingAlpha = 1
-        if Config.BoxBreathing then
-            breathingAlpha = (math.sin(tick() * 5) + 1) / 2
-        end
         
         local rainbowColor = Color3.fromHSV(tick() % 5 / 5, 1, 1)
         
@@ -1017,11 +1016,7 @@ local function EnsureBoxVisuals(targetChar)
                     v.BackgroundColor3 = Config.BoxColor
                 end
                 
-                if Config.BoxBreathing then
-                    v.BackgroundTransparency = Config.BoxTransparency + (1 - Config.BoxTransparency) * (1 - breathingAlpha) * 0.7
-                else
-                    v.BackgroundTransparency = Config.BoxTransparency
-                end
+                v.BackgroundTransparency = Config.BoxTransparency
                 if Config.BoxShape ~= "方框" and Config.BoxShape ~= "三角形" then v.Size = UDim2.new(v.Size.X.Scale, v.Size.X.Offset, 0, Config.BoxThickness) end
             end
         end
