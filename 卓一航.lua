@@ -8,6 +8,7 @@ local SoundService = game:GetService("SoundService")
 local StatsService = game:GetService("Stats")
 local Teams = game:GetService("Teams")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local LocalizationService = game:GetService("LocalizationService")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
@@ -692,38 +693,6 @@ AdminGroup:AddToggle('AdminWatchdog', {
     Callback = function(Value) Config.AdminWatchdog = Value end
 })
 
-local function UpdateListDropdowns()
-    local whitelistNames = {}
-    for id, _ in pairs(Config.Whitelist) do
-        local p = Players:GetPlayerByUserId(id)
-        if p then table.insert(whitelistNames, p.Name) end
-    end
-    if #whitelistNames == 0 then whitelistNames = {"无"} end
-    Options.WhitelistMembers:SetValues(whitelistNames)
-
-    local blacklistNames = {}
-    for id, _ in pairs(Config.Blacklist) do
-        local p = Players:GetPlayerByUserId(id)
-        if p then table.insert(blacklistNames, p.Name) end
-    end
-    if #blacklistNames == 0 then blacklistNames = {"无"} end
-    Options.BlacklistMembers:SetValues(blacklistNames)
-
-    local teamWhiteNames = {}
-    for name, _ in pairs(Config.TeamWhitelist) do
-        table.insert(teamWhiteNames, name)
-    end
-    if #teamWhiteNames == 0 then teamWhiteNames = {"无"} end
-    Options.TeamWhitelistMembers:SetValues(teamWhiteNames)
-
-    local teamBlackNames = {}
-    for name, _ in pairs(Config.TeamBlacklist) do
-        table.insert(teamBlackNames, name)
-    end
-    if #teamBlackNames == 0 then teamBlackNames = {"无"} end
-    Options.TeamBlacklistMembers:SetValues(teamBlackNames)
-end
-
 local function GetPlayer(String)
     if not String or String == "" then return nil end
     local Exact = Players:FindFirstChild(String)
@@ -766,35 +735,108 @@ local function GetTeam(String)
     end
 end
 
+local function GetFormattedPlayerName(p)
+    if p.DisplayName and p.DisplayName ~= p.Name then
+        return p.Name .. " (" .. p.DisplayName .. ")"
+    end
+    return p.Name
+end
+
+local Translator
+pcall(function()
+    Translator = LocalizationService:GetTranslatorForPlayerAsync(LocalPlayer)
+end)
+
+local function GetFormattedTeamName(t)
+    local localizedName = t.Name
+    if Translator then
+        pcall(function()
+            localizedName = Translator:Translate(t, t.Name)
+        end)
+    end
+    
+    if localizedName ~= t.Name then
+        return t.Name .. " (" .. localizedName .. ")"
+    else
+        return t.Name
+    end
+end
+
+local function GetAllPlayerNames()
+    local t = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        table.insert(t, GetFormattedPlayerName(p))
+    end
+    return t
+end
+
+local function GetAllTeamNames()
+    local t = {}
+    for _, team in ipairs(Teams:GetTeams()) do
+        table.insert(t, GetFormattedTeamName(team))
+    end
+    return t
+end
+
+local function GetWhitelistTable()
+    local t = {}
+    for id, _ in pairs(Config.Whitelist) do
+        local p = Players:GetPlayerByUserId(id)
+        if p then t[GetFormattedPlayerName(p)] = true end
+    end
+    return t
+end
+
+local function GetBlacklistTable()
+    local t = {}
+    for id, _ in pairs(Config.Blacklist) do
+        local p = Players:GetPlayerByUserId(id)
+        if p then t[GetFormattedPlayerName(p)] = true end
+    end
+    return t
+end
+
+local function GetTeamWhitelistTable()
+    local t = {}
+    for name, _ in pairs(Config.TeamWhitelist) do 
+        local team = Teams:FindFirstChild(name)
+        if team then t[GetFormattedTeamName(team)] = true end
+    end
+    return t
+end
+
+local function GetTeamBlacklistTable()
+    local t = {}
+    for name, _ in pairs(Config.TeamBlacklist) do 
+        local team = Teams:FindFirstChild(name)
+        if team then t[GetFormattedTeamName(team)] = true end
+    end
+    return t
+end
+
 local PlayerListGroup = ListsTab:AddLeftGroupbox("玩家名单管理")
 PlayerListGroup:AddToggle('WhitelistEnabled', {
     Text = '启用白名单',
     Default = Config.WhitelistEnabled,
     Callback = function(Value) Config.WhitelistEnabled = Value end
 })
-PlayerListGroup:AddDropdown('WhitelistMembers', {
-    Text = '当前白名单列表',
-    Values = {"无"},
-    Default = 1,
-    Multi = false
-})
-PlayerListGroup:AddInput('AddWhitelist', {
-    Text = '添加/移除 白名单',
-    Placeholder = '输入玩家名称',
+PlayerListGroup:AddDropdown('WhitelistManager', {
+    Text = '管理白名单 (勾选添加)',
+    Values = GetAllPlayerNames(),
+    Default = {},
+    Multi = true,
     Callback = function(Value)
-        local p = GetPlayer(Value)
-        if p then
-            if Config.Whitelist[p.UserId] then
-                Config.Whitelist[p.UserId] = nil
-                Library:Notify("已从白名单移除: " .. p.Name)
-            else
-                Config.Whitelist[p.UserId] = true
-                Config.Blacklist[p.UserId] = nil
-                Library:Notify("已添加至白名单: " .. p.Name)
+        Config.Whitelist = {}
+        for fmtName, selected in pairs(Value) do
+            if selected then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if GetFormattedPlayerName(p) == fmtName then
+                        Config.Whitelist[p.UserId] = true
+                        Config.Blacklist[p.UserId] = nil
+                        break
+                    end
+                end
             end
-            UpdateListDropdowns()
-        else
-            Library:Notify("未找到唯一玩家，请检查输入")
         end
     end
 })
@@ -804,29 +846,23 @@ PlayerListGroup:AddToggle('BlacklistEnabled', {
     Default = Config.BlacklistEnabled,
     Callback = function(Value) Config.BlacklistEnabled = Value end
 })
-PlayerListGroup:AddDropdown('BlacklistMembers', {
-    Text = '当前黑名单列表',
-    Values = {"无"},
-    Default = 1,
-    Multi = false
-})
-PlayerListGroup:AddInput('AddBlacklist', {
-    Text = '添加/移除 黑名单',
-    Placeholder = '输入玩家名称',
+PlayerListGroup:AddDropdown('BlacklistManager', {
+    Text = '管理黑名单 (勾选添加)',
+    Values = GetAllPlayerNames(),
+    Default = {},
+    Multi = true,
     Callback = function(Value)
-        local p = GetPlayer(Value)
-        if p then
-            if Config.Blacklist[p.UserId] then
-                Config.Blacklist[p.UserId] = nil
-                Library:Notify("已从黑名单移除: " .. p.Name)
-            else
-                Config.Blacklist[p.UserId] = true
-                Config.Whitelist[p.UserId] = nil
-                Library:Notify("已添加至黑名单: " .. p.Name)
+        Config.Blacklist = {}
+        for fmtName, selected in pairs(Value) do
+            if selected then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if GetFormattedPlayerName(p) == fmtName then
+                        Config.Blacklist[p.UserId] = true
+                        Config.Whitelist[p.UserId] = nil
+                        break
+                    end
+                end
             end
-            UpdateListDropdowns()
-        else
-            Library:Notify("未找到唯一玩家，请检查输入")
         end
     end
 })
@@ -837,28 +873,23 @@ TeamListGroup:AddToggle('TeamWhitelistEnabled', {
     Default = Config.TeamWhitelistEnabled,
     Callback = function(Value) Config.TeamWhitelistEnabled = Value end
 })
-TeamListGroup:AddDropdown('TeamWhitelistMembers', {
-    Text = '当前白名单队伍',
-    Values = {"无"},
-    Default = 1,
-    Multi = false
-})
-TeamListGroup:AddInput('AddTeamWhitelist', {
-    Text = '添加/移除 白名单队伍',
-    Placeholder = '输入队伍名称',
+TeamListGroup:AddDropdown('TeamWhitelistManager', {
+    Text = '管理白名单队伍 (勾选添加)',
+    Values = GetAllTeamNames(),
+    Default = {},
+    Multi = true,
     Callback = function(Value)
-        local t = GetTeam(Value)
-        if t then
-            if Config.TeamWhitelist[t.Name] then
-                Config.TeamWhitelist[t.Name] = nil
-                Library:Notify("已移除白名单队伍: " .. t.Name)
-            else
-                Config.TeamWhitelist[t.Name] = true
-                Library:Notify("已添加白名单队伍: " .. t.Name)
+        Config.TeamWhitelist = {}
+        for fmtName, selected in pairs(Value) do
+            if selected then
+                for _, t in ipairs(Teams:GetTeams()) do
+                    if GetFormattedTeamName(t) == fmtName then
+                        Config.TeamWhitelist[t.Name] = true
+                        Config.TeamBlacklist[t.Name] = nil
+                        break
+                    end
+                end
             end
-            UpdateListDropdowns()
-        else
-            Library:Notify("未找到唯一队伍，请检查输入")
         end
     end
 })
@@ -868,28 +899,23 @@ TeamListGroup:AddToggle('TeamBlacklistEnabled', {
     Default = Config.TeamBlacklistEnabled,
     Callback = function(Value) Config.TeamBlacklistEnabled = Value end
 })
-TeamListGroup:AddDropdown('TeamBlacklistMembers', {
-    Text = '当前黑名单队伍',
-    Values = {"无"},
-    Default = 1,
-    Multi = false
-})
-TeamListGroup:AddInput('AddTeamBlacklist', {
-    Text = '添加/移除 黑名单队伍',
-    Placeholder = '输入队伍名称',
+TeamListGroup:AddDropdown('TeamBlacklistManager', {
+    Text = '管理黑名单队伍 (勾选添加)',
+    Values = GetAllTeamNames(),
+    Default = {},
+    Multi = true,
     Callback = function(Value)
-        local t = GetTeam(Value)
-        if t then
-            if Config.TeamBlacklist[t.Name] then
-                Config.TeamBlacklist[t.Name] = nil
-                Library:Notify("已移除黑名单队伍: " .. t.Name)
-            else
-                Config.TeamBlacklist[t.Name] = true
-                Library:Notify("已添加黑名单队伍: " .. t.Name)
+        Config.TeamBlacklist = {}
+        for fmtName, selected in pairs(Value) do
+            if selected then
+                for _, t in ipairs(Teams:GetTeams()) do
+                    if GetFormattedTeamName(t) == fmtName then
+                        Config.TeamBlacklist[t.Name] = true
+                        Config.TeamWhitelist[t.Name] = nil
+                        break
+                    end
+                end
             end
-            UpdateListDropdowns()
-        else
-            Library:Notify("未找到唯一队伍，请检查输入")
         end
     end
 })
@@ -1342,7 +1368,31 @@ local function CheckAdmin(player)
     end
 end
 
-table.insert(Connections, Players.PlayerAdded:Connect(CheckAdmin))
+table.insert(Connections, Players.PlayerAdded:Connect(function(p)
+    CheckAdmin(p)
+    local allPlayers = GetAllPlayerNames()
+    Options.WhitelistManager:SetValues(allPlayers)
+    Options.BlacklistManager:SetValues(allPlayers)
+    Options.WhitelistManager:SetValue(GetWhitelistTable())
+    Options.BlacklistManager:SetValue(GetBlacklistTable())
+end))
+
+table.insert(Connections, Players.PlayerRemoving:Connect(function(p)
+    local allPlayers = GetAllPlayerNames()
+    Options.WhitelistManager:SetValues(allPlayers)
+    Options.BlacklistManager:SetValues(allPlayers)
+    Options.WhitelistManager:SetValue(GetWhitelistTable())
+    Options.BlacklistManager:SetValue(GetBlacklistTable())
+end))
+
+table.insert(Connections, Teams.ChildAdded:Connect(function()
+    local allTeams = GetAllTeamNames()
+    Options.TeamWhitelistManager:SetValues(allTeams)
+    Options.TeamBlacklistManager:SetValues(allTeams)
+    Options.TeamWhitelistManager:SetValue(GetTeamWhitelistTable())
+    Options.TeamBlacklistManager:SetValue(GetTeamBlacklistTable())
+end))
+
 for _, p in pairs(Players:GetPlayers()) do CheckAdmin(p) end
 
 table.insert(Connections, RunService.Heartbeat:Connect(function()
