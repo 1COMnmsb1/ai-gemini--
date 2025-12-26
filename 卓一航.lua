@@ -38,15 +38,11 @@ local Config = {
     CoverCheck = false,
     MultiPointCheck = false,
     WallCheckFallback = false, 
-    ContinuousLock = false, 
     MaxDistance = 2000,
     UseFOV = false,
     FOVVisible = false,
     FOVRadius = 130,
     UserFOVRadius = 130, 
-    SmartFOV = false,
-    SmartFOVMin = 10,
-    SmartFOVSpeed = 15,
     FixedFOV = false,
     FOVColor = Color3.fromRGB(255, 255, 255),
     BoxVisible = false,
@@ -90,6 +86,7 @@ local Config = {
     HeadshotChance = 0,
     AdminWatchdog = false,
     SilentEnabled = false,
+    SilentAimPart = "躯干",
     SilentHitChance = 100,
     SilentPrediction = 0.165,
     SilentMethod = "Raycast",
@@ -102,7 +99,11 @@ local Config = {
     AimQuickButtonTransparency = 0.3,
     SilentQuickButtonEnabled = false,
     SilentQuickButtonSize = 50,
-    SilentQuickButtonTransparency = 0.3
+    SilentQuickButtonTransparency = 0.3,
+    HealthVisible = false,
+    HealthPosition = "上方",
+    HealthTextColor = Color3.fromRGB(255, 255, 255),
+    RainbowHealthText = false
 }
 
 local HitSounds = {
@@ -260,10 +261,16 @@ TracerLineFrame.BorderSizePixel = 0
 TracerLineFrame.Visible = false
 
 local visualEffect = nil
+local healthVisualEffect = nil
+
 local function CleanupVisuals()
     if visualEffect then
         visualEffect:Destroy()
         visualEffect = nil
+    end
+    if healthVisualEffect then
+        healthVisualEffect:Destroy()
+        healthVisualEffect = nil
     end
 end
 
@@ -281,14 +288,33 @@ local ListsTab = Window:AddTab("名单")
 local SettingsTab = Window:AddTab("设置")
 
 local AimGeneralGroup = AimTab:AddLeftGroupbox("基础参数")
-AimGeneralGroup:AddSlider('Sensitivity', {
-    Text = '平滑度 (0=锁死)',
-    Default = Config.Sensitivity,
-    Min = 0,
-    Max = 100,
-    Rounding = 1,
-    Callback = function(Value) Config.Sensitivity = Value end
+
+local isLocked = false
+local currentTarget = nil
+local lockedUserId = nil
+local previouslyLockedId = nil
+local healthConnection = nil
+
+AimGeneralGroup:AddToggle('AimEnabled', {
+    Text = '开启锁定功能',
+    Default = false,
+    Callback = function(Value)
+        isLocked = Value
+        if not isLocked then
+            ShowNotification(Config.TextUnlocked, "Unlock")
+            currentTarget = nil
+            lockedUserId = nil
+            previouslyLockedId = nil
+            if healthConnection then
+                healthConnection:Disconnect()
+                healthConnection = nil
+            end
+            CleanupVisuals()
+        end
+        UpdateQuickButtons()
+    end
 })
+
 AimGeneralGroup:AddDropdown('LockMode', {
     Text = '锁定模式',
     Default = Config.LockMode,
@@ -301,10 +327,18 @@ AimGeneralGroup:AddDropdown('AimPart', {
     Values = {"躯干", "头部", "手臂", "腿部", "随机"},
     Callback = function(Value) Config.AimPart = Value end
 })
-AimGeneralGroup:AddToggle('ContinuousLock', {
-    Text = '连续锁定 (需按住)',
-    Default = Config.ContinuousLock,
-    Callback = function(Value) Config.ContinuousLock = Value end
+AimGeneralGroup:AddSlider('Sensitivity', {
+    Text = '平滑度 (0=锁死)',
+    Default = Config.Sensitivity,
+    Min = 0,
+    Max = 100,
+    Rounding = 1,
+    Callback = function(Value) Config.Sensitivity = Value end
+})
+AimGeneralGroup:AddToggle('StickyAiming', {
+    Text = '粘性瞄准',
+    Default = Config.StickyAiming,
+    Callback = function(Value) Config.StickyAiming = Value end
 })
 
 local AimLogicGroup = AimTab:AddLeftGroupbox("目标逻辑")
@@ -314,15 +348,82 @@ AimLogicGroup:AddDropdown('PriorityMode', {
     Values = {"准心优先", "最低血量", "最近距离"},
     Callback = function(Value) Config.PriorityMode = Value end
 })
-AimLogicGroup:AddToggle('StickyAiming', {
-    Text = '粘性瞄准',
-    Default = Config.StickyAiming,
-    Callback = function(Value) Config.StickyAiming = Value end
-})
 AimLogicGroup:AddToggle('WallCheckFallback', {
     Text = '掩体回退 (自动打身)',
     Default = Config.WallCheckFallback,
     Callback = function(Value) Config.WallCheckFallback = Value end
+})
+
+local SilentGroup = AimTab:AddRightGroupbox("静默自瞄")
+SilentGroup:AddToggle('SilentEnabled', {
+    Text = '启用静默自瞄',
+    Default = Config.SilentEnabled,
+    Callback = function(Value) 
+        Config.SilentEnabled = Value 
+        UpdateQuickButtons()
+    end
+})
+SilentGroup:AddDropdown('SilentAimPart', {
+    Text = '静默命中部位',
+    Default = Config.SilentAimPart,
+    Values = {"躯干", "头部", "手臂", "腿部", "随机"},
+    Callback = function(Value) Config.SilentAimPart = Value end
+})
+SilentGroup:AddDropdown('SilentMethod', {
+    Text = '拦截模式',
+    Default = Config.SilentMethod,
+    Values = {"Raycast", "FindPartOnRay", "FindPartOnRayWithIgnoreList", "FindPartOnRayWithWhitelist", "ScreenPointToRay", "ViewportPointToRay", "Mouse.Hit", "Mouse.Target", "Ray.new"},
+    Callback = function(Value) Config.SilentMethod = Value end
+})
+SilentGroup:AddSlider('SilentHitChance', {
+    Text = '静默命中率',
+    Default = Config.SilentHitChance,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(Value) Config.SilentHitChance = Value end
+})
+SilentGroup:AddDropdown('WallbangMode', {
+    Text = '穿墙模式',
+    Default = Config.WallbangMode,
+    Values = {'无', '物理穿透 (RaycastParams)', '伪造击中 (SpoofHit)'},
+    Callback = function(Value) Config.WallbangMode = Value end
+})
+SilentGroup:AddDropdown('BulletTPMode', {
+    Text = '子弹传送',
+    Default = Config.BulletTPMode,
+    Values = {'无', '坐标传送', '骨骼传送'},
+    Callback = function(Value) Config.BulletTPMode = Value end
+})
+SilentGroup:AddToggle('SilentQuickButtonEnabled', {
+    Text = '启用静默快捷按钮',
+    Default = Config.SilentQuickButtonEnabled,
+    Callback = function(Value)
+        Config.SilentQuickButtonEnabled = Value
+        UpdateQuickButtons()
+    end
+})
+SilentGroup:AddSlider('SilentQuickButtonSize', {
+    Text = '按钮大小',
+    Default = Config.SilentQuickButtonSize,
+    Min = 20,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(Value)
+        Config.SilentQuickButtonSize = Value
+        UpdateQuickButtons()
+    end
+})
+SilentGroup:AddSlider('SilentQuickButtonTransparency', {
+    Text = '按钮透明度',
+    Default = Config.SilentQuickButtonTransparency,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(Value)
+        Config.SilentQuickButtonTransparency = Value
+        UpdateQuickButtons()
+    end
 })
 
 local LegitGroup = AimTab:AddRightGroupbox("伪装模式")
@@ -368,73 +469,6 @@ LegitGroup:AddDropdown('SmoothnessCurve', {
     Default = Config.SmoothnessCurve,
     Values = {"线性", "正弦", "二次方", "指数", "弹性", "圆形"},
     Callback = function(Value) Config.SmoothnessCurve = Value end
-})
-
-local SilentGroup = AimTab:AddRightGroupbox("静默自瞄")
-SilentGroup:AddToggle('SilentEnabled', {
-    Text = '启用静默自瞄',
-    Default = Config.SilentEnabled,
-    Callback = function(Value) 
-        Config.SilentEnabled = Value 
-        UpdateQuickButtons()
-    end
-})
-SilentGroup:AddDropdown('SilentMethod', {
-    Text = '拦截模式',
-    Default = Config.SilentMethod,
-    Values = {"Raycast", "FindPartOnRay", "FindPartOnRayWithIgnoreList", "FindPartOnRayWithWhitelist", "ScreenPointToRay", "ViewportPointToRay", "Mouse.Hit", "Mouse.Target", "Ray.new"},
-    Callback = function(Value) Config.SilentMethod = Value end
-})
-SilentGroup:AddSlider('SilentHitChance', {
-    Text = '静默命中率',
-    Default = Config.SilentHitChance,
-    Min = 0,
-    Max = 100,
-    Rounding = 0,
-    Callback = function(Value) Config.SilentHitChance = Value end
-})
-SilentGroup:AddDropdown('WallbangMode', {
-    Text = '穿墙模式',
-    Default = Config.WallbangMode,
-    Values = {'无', 'RaycastParams', 'SpoofHit'},
-    Callback = function(Value) Config.WallbangMode = Value end
-})
-SilentGroup:AddDropdown('BulletTPMode', {
-    Text = '子弹传送',
-    Default = Config.BulletTPMode,
-    Values = {'无', '坐标传送', '骨骼传送'},
-    Callback = function(Value) Config.BulletTPMode = Value end
-})
-
-SilentGroup:AddToggle('SilentQuickButtonEnabled', {
-    Text = '启用静默快捷按钮',
-    Default = Config.SilentQuickButtonEnabled,
-    Callback = function(Value)
-        Config.SilentQuickButtonEnabled = Value
-        UpdateQuickButtons()
-    end
-})
-SilentGroup:AddSlider('SilentQuickButtonSize', {
-    Text = '按钮大小',
-    Default = Config.SilentQuickButtonSize,
-    Min = 20,
-    Max = 100,
-    Rounding = 0,
-    Callback = function(Value)
-        Config.SilentQuickButtonSize = Value
-        UpdateQuickButtons()
-    end
-})
-SilentGroup:AddSlider('SilentQuickButtonTransparency', {
-    Text = '按钮透明度',
-    Default = Config.SilentQuickButtonTransparency,
-    Min = 0,
-    Max = 1,
-    Rounding = 2,
-    Callback = function(Value)
-        Config.SilentQuickButtonTransparency = Value
-        UpdateQuickButtons()
-    end
 })
 
 local PredGroup = AimTab:AddRightGroupbox("预判系统")
@@ -497,29 +531,7 @@ FOVGroup:AddSlider('UserFOVRadius', {
     Rounding = 0,
     Callback = function(Value) 
         Config.UserFOVRadius = Value
-        if Config.SmartFOVMin > Value then Config.SmartFOVMin = Value end
     end
-})
-FOVGroup:AddToggle('SmartFOV', {
-    Text = '智能缩放 (随距离)',
-    Default = Config.SmartFOV,
-    Callback = function(Value) Config.SmartFOV = Value end
-})
-FOVGroup:AddSlider('SmartFOVMin', {
-    Text = '最小缩放半径',
-    Default = Config.SmartFOVMin,
-    Min = 10,
-    Max = 800,
-    Rounding = 0,
-    Callback = function(Value) Config.SmartFOVMin = Value end
-})
-FOVGroup:AddSlider('SmartFOVSpeed', {
-    Text = '缩放平滑速度',
-    Default = Config.SmartFOVSpeed,
-    Min = 1,
-    Max = 30,
-    Rounding = 1,
-    Callback = function(Value) Config.SmartFOVSpeed = Value end
 })
 FOVGroup:AddToggle('FixedFOV', {
     Text = '固定在屏幕中心',
@@ -592,6 +604,29 @@ BoxGroup:AddToggle('RainbowBox', {
     Callback = function(Value) Config.RainbowBox = Value end
 })
 
+local HealthGroup = VisualsTab:AddRightGroupbox("生命值显示")
+HealthGroup:AddToggle('HealthVisible', {
+    Text = '显示血条',
+    Default = Config.HealthVisible,
+    Callback = function(Value) Config.HealthVisible = Value end
+})
+HealthGroup:AddDropdown('HealthPosition', {
+    Text = '显示位置',
+    Default = Config.HealthPosition,
+    Values = {"上方", "中心", "下方"},
+    Callback = function(Value) Config.HealthPosition = Value end
+})
+HealthGroup:AddLabel('文字颜色'):AddColorPicker('HealthTextColor', {
+    Default = Config.HealthTextColor,
+    Title = '文字颜色',
+    Callback = function(Value) Config.HealthTextColor = Value end
+})
+HealthGroup:AddToggle('RainbowHealthText', {
+    Text = '彩虹渐变模式',
+    Default = Config.RainbowHealthText,
+    Callback = function(Value) Config.RainbowHealthText = Value end
+})
+
 local TracerGroup = VisualsTab:AddLeftGroupbox("追踪线样式")
 TracerGroup:AddToggle('TracerVisible', {
     Text = '显示追踪线',
@@ -634,7 +669,7 @@ FilterGroup:AddToggle('TeamCheck', {
 FilterGroup:AddDropdown('TeamCheckMode', {
     Text = '队伍判断模式',
     Default = Config.TeamCheckMode,
-    Values = {"标准", "Attribute", "Object", "Folder", "Leaderstats"},
+    Values = {"标准", "属性检测", "对象检测", "文件夹检测", "榜单检测"},
     Callback = function(Value) Config.TeamCheckMode = Value end
 })
 FilterGroup:AddToggle('CoverCheck', {
@@ -922,14 +957,9 @@ TeamListGroup:AddDropdown('TeamBlacklistManager', {
 
 Library:SetWatermark("PureLock System - Obsidian")
 
-local isLocked = false
-local currentTarget = nil
-local lockedUserId = nil
 local legitOffset = Vector3.zero
 local lastLockTime = 0
-local previouslyLockedId = nil
 local lastHealth = 0
-local healthConnection = nil
 local SharedPart = nil
 local lastShotTime = 0
 
@@ -947,7 +977,7 @@ local function EnsureBoxVisuals(targetChar)
     if not root or not torso then CleanupVisuals() return end
     
     if not visualEffect or not visualEffect.Parent then
-        CleanupVisuals()
+        if visualEffect then visualEffect:Destroy() end
         local bb = Instance.new("BillboardGui", CoreGui)
         bb.Name = "LockBox"
         bb.Adornee = torso
@@ -1166,6 +1196,40 @@ local function GetTargetPart(char)
     return "Torso"
 end
 
+local function GetSilentTargetPart(char)
+    if not char then return "Torso" end
+    
+    if Config.SilentAimPart == "头部" then
+        return "Head"
+    end
+
+    if Config.SilentAimPart == "躯干" then
+        return "HumanoidRootPart"
+    end
+    
+    local parts = {}
+    if Config.SilentAimPart == "随机" then
+        for _, v in pairs(char:GetChildren()) do if v:IsA("BasePart") then table.insert(parts, v.Name) end end
+    elseif Config.SilentAimPart == "手臂" then
+        parts = {"Left Arm","Right Arm","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm"}
+    elseif Config.SilentAimPart == "腿部" then
+        parts = {"Left Leg","Right Leg","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg"}
+    end
+    
+    local visibleParts = {}
+    for _, name in ipairs(parts) do
+        local p = char:FindFirstChild(name)
+        if p then table.insert(visibleParts, name) end
+    end
+    
+    if #visibleParts > 0 then
+        local idx = math.random(1, #visibleParts)
+        return visibleParts[idx]
+    end
+    
+    return "HumanoidRootPart"
+end
+
 local function IsTeammate(p)
     if not Config.TeamCheck then return false end
     if p == LocalPlayer then return true end
@@ -1174,7 +1238,7 @@ local function IsTeammate(p)
     
     if mode == "标准" then
         if p.Team and p.Team == LocalPlayer.Team then return true end
-    elseif mode == "Attribute" then
+    elseif mode == "属性检测" then
         local myTeam = LocalPlayer:GetAttribute("Team") or LocalPlayer:GetAttribute("Side") or LocalPlayer:GetAttribute("Faction")
         local theirTeam = p:GetAttribute("Team") or p:GetAttribute("Side") or p:GetAttribute("Faction")
         if myTeam and theirTeam and myTeam == theirTeam then return true end
@@ -1183,7 +1247,7 @@ local function IsTeammate(p)
             local theirCharTeam = p.Character:GetAttribute("Team") or p.Character:GetAttribute("Side") or p.Character:GetAttribute("Faction")
             if myCharTeam and theirCharTeam and myCharTeam == theirCharTeam then return true end
         end
-    elseif mode == "Object" then
+    elseif mode == "对象检测" then
         if LocalPlayer.Character and p.Character then
              local function findVal(parent)
                 for _, c in ipairs(parent:GetChildren()) do
@@ -1196,13 +1260,13 @@ local function IsTeammate(p)
              local theirVal = findVal(p.Character)
              if myVal and theirVal and myVal == theirVal then return true end
         end
-    elseif mode == "Folder" then
+    elseif mode == "文件夹检测" then
         if LocalPlayer.Character and p.Character and LocalPlayer.Character.Parent and p.Character.Parent then
             if LocalPlayer.Character.Parent == p.Character.Parent and LocalPlayer.Character.Parent ~= workspace then
                 return true
             end
         end
-    elseif mode == "Leaderstats" then
+    elseif mode == "榜单检测" then
         if LocalPlayer:FindFirstChild("leaderstats") and p:FindFirstChild("leaderstats") then
             local myTeam = LocalPlayer.leaderstats:FindFirstChild("Team") or LocalPlayer.leaderstats:FindFirstChild("Side") or LocalPlayer.leaderstats:FindFirstChild("Faction")
             local theirTeam = p.leaderstats:FindFirstChild("Team") or p.leaderstats:FindFirstChild("Side") or p.leaderstats:FindFirstChild("Faction")
@@ -1302,32 +1366,6 @@ ThemeManager:ApplyToTab(SettingsTab)
 SettingsTab:AddLeftGroupbox("快捷键绑定"):AddLabel("菜单开/关"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "菜单开关" }) 
 Library.ToggleKeybind = Options.MenuKeybind 
 
-AimGeneralGroup:AddToggle('AimEnabled', {
-    Text = '开启锁定功能',
-    Default = false,
-    Callback = function(Value)
-        isLocked = Value
-        if not isLocked then
-            ShowNotification(Config.TextUnlocked, "Unlock")
-            currentTarget = nil
-            lockedUserId = nil
-            previouslyLockedId = nil
-            if healthConnection then
-                healthConnection:Disconnect()
-                healthConnection = nil
-            end
-            CleanupVisuals()
-        end
-        UpdateQuickButtons()
-    end
-}):AddKeyPicker('AimKeybind', {
-    Default = 'C',
-    SyncToggleState = true,
-    Mode = 'Toggle',
-    Text = '锁定按键',
-    NoUI = false,
-})
-
 AimGeneralGroup:AddToggle('AimQuickButtonEnabled', {
     Text = '启用自瞄快捷按钮',
     Default = Config.AimQuickButtonEnabled,
@@ -1398,7 +1436,13 @@ for _, p in pairs(Players:GetPlayers()) do CheckAdmin(p) end
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     local t = GetSortedTarget()
     if t then
-        SharedPart = t:FindFirstChild(Config.AimPart) or t:FindFirstChild("HumanoidRootPart")
+        local targetPartName
+        if isLocked then
+            targetPartName = GetTargetPart(t)
+        else
+            targetPartName = GetSilentTargetPart(t)
+        end
+        SharedPart = t:FindFirstChild(targetPartName) or t:FindFirstChild("HumanoidRootPart")
     else
         SharedPart = nil
     end
@@ -1421,8 +1465,10 @@ end))
 table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     local now = tick()
     
-    if Config.ContinuousLock then
-        isLocked = Options.AimKeybind:GetState()
+    if Toggles.AimEnabled and Toggles.AimEnabled.Value then
+        isLocked = true
+    else
+        isLocked = false
     end
     
     local rainbowColor = Color3.fromHSV(now % 5 / 5, 1, 1)
@@ -1433,22 +1479,7 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     
     FOVStroke.Color = Config.FOVColor
 
-    local currentCameraFOV = Camera.FieldOfView
-    local scaledMaxFOV = Config.UserFOVRadius * (70 / currentCameraFOV)
-    local targetRadius = Config.UserFOVRadius
-
-    if Config.SmartFOV then
-        targetRadius = scaledMaxFOV
-        if isLocked and currentTarget then
-            local part = currentTarget:FindFirstChild(Config.AimPart) or currentTarget:FindFirstChild("HumanoidRootPart")
-            if part then
-                local dist = (part.Position - Camera.CFrame.Position).Magnitude
-                targetRadius = math.clamp(Config.UserFOVRadius * (60 / dist), Config.SmartFOVMin, scaledMaxFOV)
-            end
-        end
-    end
-    
-    Config.FOVRadius = Config.FOVRadius + (targetRadius - Config.FOVRadius) * math.clamp(dt * Config.SmartFOVSpeed, 0, 1)
+    Config.FOVRadius = Config.UserFOVRadius
     
     FOVCircleFrame.Size = UDim2.fromOffset(Config.FOVRadius*2, Config.FOVRadius*2)
 
@@ -1485,19 +1516,62 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     local activeTarget = nil
     
     if isLocked and Camera then
-        if now - lastSearch > 0.1 then
-            lastSearch = now
-            if not lockedUserId then
-                local t = GetSortedTarget()
-                if t then 
-                    if Players:GetPlayerFromCharacter(t) then
-                        lockedUserId = Players:GetPlayerFromCharacter(t).UserId 
+        local bestTarget = GetSortedTarget()
+        
+        if Config.StickyAiming then
+            local currentP = lockedUserId and Players:GetPlayerByUserId(lockedUserId)
+            local currentC = currentP and currentP.Character
+            
+            local isCurrentValid = false
+            if currentC and currentC:FindFirstChild("Humanoid") and currentC.Humanoid.Health > 0 and currentC:FindFirstChild("HumanoidRootPart") then
+                 if (not Config.CoverCheck or CheckCover(currentC)) then
+                     if Config.UseFOV then
+                        local r = currentC:FindFirstChild("HumanoidRootPart")
+                        local s, o = Camera:WorldToViewportPoint(r.Position)
+                        local m = Config.FixedFOV and (Camera.ViewportSize/2) or UserInputService:GetMouseLocation()
+                        if (Vector2.new(s.X, s.Y) - m).Magnitude <= Config.FOVRadius then
+                            isCurrentValid = true
+                        end
+                     else
+                        isCurrentValid = true
+                     end
+                 end
+            end
+            
+            if not isCurrentValid then
+                if bestTarget then
+                     local p = Players:GetPlayerFromCharacter(bestTarget)
+                     if p then
+                        lockedUserId = p.UserId
+                        currentTarget = bestTarget
+                        lastLockTime = now
+                        if Config.LegitMode then
+                            legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
+                        end
+                     end
+                else
+                     lockedUserId = nil
+                     currentTarget = nil
+                end
+            else
+                currentTarget = currentC
+            end
+        else
+            if bestTarget then
+                local p = Players:GetPlayerFromCharacter(bestTarget)
+                if p then
+                    if lockedUserId ~= p.UserId then
                         lastLockTime = now
                         if Config.LegitMode then
                             legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
                         end
                     end
+                    lockedUserId = p.UserId
+                    currentTarget = bestTarget
                 end
+            else
+                lockedUserId = nil
+                currentTarget = nil
             end
         end
         
@@ -1511,88 +1585,11 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
                 if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
             end
 
-            local p = Players:GetPlayerByUserId(lockedUserId)
-            if not p then
-                if Config.ContinuousLock then
-                     lockedUserId = nil; currentTarget = nil
-                     previouslyLockedId = nil
-                else
-                     currentTarget = nil 
-                     lockedUserId = nil
-                     ShowNotification(Config.TextLost, "Warn")
-                     if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
-                     CleanupVisuals()
-                end
-            else
-                local char = p.Character
-                local valid = false
-                if char and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 and char:FindFirstChild("HumanoidRootPart") then
-                    valid = true
-                    if Config.CoverCheck and not CheckCover(char) then valid = false end
-                    if Config.UseFOV then
-                        local r = char:FindFirstChild("HumanoidRootPart")
-                        local s, o = Camera:WorldToViewportPoint(r.Position)
-                        local m = Config.FixedFOV and (Camera.ViewportSize/2) or UserInputService:GetMouseLocation()
-                        if (Vector2.new(s.X, s.Y) - m).Magnitude > Config.FOVRadius then valid = false end
-                    end
-                end
-                
-                if not valid then
-                    if Config.ContinuousLock then
-                        local nt = GetSortedTarget()
-                        if nt then 
-                            if Players:GetPlayerFromCharacter(nt) then
-                                lockedUserId = Players:GetPlayerFromCharacter(nt).UserId; char = nt 
-                                lastLockTime = now
-                                if Config.LegitMode then
-                                    legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
-                                end
-                            end
-                        else 
-                            lockedUserId = nil; currentTarget = nil
-                            ShowNotification("无可用目标", "Warn")
-                            previouslyLockedId = nil
-                            if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
-                        end
-                    else
-                         currentTarget = nil
-                         lockedUserId = nil
-                         ShowNotification("目标无效", "Warn")
-                         if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
-                         CleanupVisuals()
-                    end
-                else
-                    currentTarget = char
-                end
-                
-                activeTarget = currentTarget
-                
+            activeTarget = currentTarget
+            
+            if currentTarget then
                 local finalPart = GetTargetPart(currentTarget)
-
-                if currentTarget and currentTarget:FindFirstChild(finalPart) then
-                    EnsureBoxVisuals(currentTarget)
-                    
-                    local tracerDrawn = false
-                    if Config.TracerVisible and currentTarget and visualEffect and visualEffect.Adornee then
-                        local targetPos, onScreen = Camera:WorldToViewportPoint(visualEffect.Adornee.Position)
-                        if onScreen then
-                            local fovCenter = Config.FixedFOV and (Camera.ViewportSize / 2) or UserInputService:GetMouseLocation()
-                            local targetVec2 = Vector2.new(targetPos.X, targetPos.Y)
-                            local length = (targetVec2 - fovCenter).Magnitude
-                            local center = (targetVec2 + fovCenter) / 2
-                            local angle = math.atan2(targetVec2.Y - fovCenter.Y, targetVec2.X - fovCenter.X)
-                            
-                            TracerLineFrame.Visible = true
-                            TracerLineFrame.BackgroundColor3 = Config.TracerColor
-                            TracerLineFrame.BackgroundTransparency = Config.TracerTransparency
-                            TracerLineFrame.Size = UDim2.fromOffset(length, Config.TracerThickness)
-                            TracerLineFrame.Position = UDim2.fromOffset(center.X, center.Y)
-                            TracerLineFrame.Rotation = math.deg(angle)
-                            tracerDrawn = true
-                        end
-                    end
-                    if not tracerDrawn then TracerLineFrame.Visible = false end
-                    
+                if currentTarget:FindFirstChild(finalPart) then
                     local proceed = true
                     if Config.LegitMode then
                         if (now - lastLockTime < Config.ReactionDelay) then proceed = false end
@@ -1653,24 +1650,19 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
                             Camera.CFrame = curCF:Lerp(targetCF, lerpFactor)
                         end
                     end
-                else
-                    CleanupVisuals()
-                    TracerLineFrame.Visible = false
                 end
+            end
+        else
+            if previouslyLockedId then
+                ShowNotification(Config.TextLost, "Warn")
+                previouslyLockedId = nil
+                if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
             end
         end
     else
         if Config.SilentEnabled and SharedPart and SharedPart.Parent then
             activeTarget = SharedPart.Parent
-            if Config.BoxVisible then
-                EnsureBoxVisuals(SharedPart.Parent)
-            else
-                CleanupVisuals()
-            end
-        else
-            CleanupVisuals()
         end
-        TracerLineFrame.Visible = false
         lockedUserId = nil
         previouslyLockedId = nil
         currentTarget = nil
@@ -1678,6 +1670,97 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
             LocalPlayer.Character.Humanoid.AutoRotate = true
         end
+    end
+    
+    if activeTarget then
+        if Config.BoxVisible then
+            EnsureBoxVisuals(activeTarget)
+        else
+            if visualEffect then visualEffect:Destroy(); visualEffect = nil end
+        end
+        
+        local tracerDrawn = false
+        if Config.TracerVisible then
+             local targetPart = activeTarget:FindFirstChild("HumanoidRootPart") or activeTarget:FindFirstChild("Torso") or activeTarget:FindFirstChild("UpperTorso")
+             if targetPart then
+                 local targetPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                 if onScreen then
+                     local fovCenter = Config.FixedFOV and (Camera.ViewportSize / 2) or UserInputService:GetMouseLocation()
+                     local targetVec2 = Vector2.new(targetPos.X, targetPos.Y)
+                     local length = (targetVec2 - fovCenter).Magnitude
+                     local center = (targetVec2 + fovCenter) / 2
+                     local angle = math.atan2(targetVec2.Y - fovCenter.Y, targetVec2.X - fovCenter.X)
+                     
+                     TracerLineFrame.Visible = true
+                     TracerLineFrame.BackgroundColor3 = Config.TracerColor
+                     TracerLineFrame.BackgroundTransparency = Config.TracerTransparency
+                     TracerLineFrame.Size = UDim2.fromOffset(length, Config.TracerThickness)
+                     TracerLineFrame.Position = UDim2.fromOffset(center.X, center.Y)
+                     TracerLineFrame.Rotation = math.deg(angle)
+                     tracerDrawn = true
+                 end
+             end
+        end
+        if not tracerDrawn then TracerLineFrame.Visible = false end
+    else
+        CleanupVisuals()
+        TracerLineFrame.Visible = false
+    end
+    
+    if Config.HealthVisible and activeTarget and activeTarget:FindFirstChild("Humanoid") then
+        local adornee = nil
+        local offset = Vector3.new(0, 0, 0)
+        
+        if Config.HealthPosition == "上方" then
+            adornee = activeTarget:FindFirstChild("Head")
+            offset = Vector3.new(0, 1.5, 0)
+        elseif Config.HealthPosition == "中心" then
+            adornee = activeTarget:FindFirstChild("HumanoidRootPart")
+            offset = Vector3.new(0, 0, 0)
+        elseif Config.HealthPosition == "下方" then
+            adornee = activeTarget:FindFirstChild("HumanoidRootPart")
+            offset = Vector3.new(0, -3.5, 0)
+        end
+        
+        if adornee then
+            if not healthVisualEffect or not healthVisualEffect.Parent then
+                if healthVisualEffect then healthVisualEffect:Destroy() end
+                healthVisualEffect = Instance.new("BillboardGui", CoreGui)
+                healthVisualEffect.Name = "PureLockHealth"
+                healthVisualEffect.AlwaysOnTop = true
+                healthVisualEffect.Size = UDim2.new(0, 100, 0, 50)
+                
+                local label = Instance.new("TextLabel", healthVisualEffect)
+                label.Name = "HealthLabel"
+                label.AnchorPoint = Vector2.new(0.5, 0.5)
+                label.Position = UDim2.fromScale(0.5, 0.5)
+                label.BackgroundTransparency = 0.5
+                label.BackgroundColor3 = Color3.new(0, 0, 0)
+                label.TextSize = 13
+                label.Font = Enum.Font.SourceSans
+                label.BorderSizePixel = 0
+                label.AutomaticSize = Enum.AutomaticSize.XY
+                label.Size = UDim2.new(0, 0, 0, 0)
+                label.TextStrokeTransparency = 1
+            end
+            
+            healthVisualEffect.Adornee = adornee
+            healthVisualEffect.StudsOffset = offset
+            
+            local label = healthVisualEffect:FindFirstChild("HealthLabel")
+            if label then
+                label.Text = tostring(math.floor(activeTarget.Humanoid.Health))
+                if Config.RainbowHealthText then
+                    label.TextColor3 = rainbowColor
+                else
+                    label.TextColor3 = Config.HealthTextColor
+                end
+            end
+        else
+            if healthVisualEffect then healthVisualEffect:Destroy(); healthVisualEffect = nil end
+        end
+    else
+        if healthVisualEffect then healthVisualEffect:Destroy(); healthVisualEffect = nil end
     end
     
     if activeTarget and activeTarget:FindFirstChild("Humanoid") then
