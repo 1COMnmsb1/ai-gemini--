@@ -1,13 +1,9 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local Debris = game:GetService("Debris")
-local SoundService = game:GetService("SoundService")
-local StatsService = game:GetService("Stats")
 local Teams = game:GetService("Teams")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 local LocalizationService = game:GetService("LocalizationService")
 
 local LocalPlayer = Players.LocalPlayer
@@ -24,6 +20,8 @@ local Toggles = Library.Toggles
 
 local Connections = {}
 
+local possiblePartsToCheck = {"Left Arm", "Right Arm", "Left Leg", "Right Leg", "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm", "LeftUpperLeg", "RightUpperLeg", "LeftHand", "RightHand", "LeftFoot", "RightFoot"}
+
 local Config = {
     Sensitivity = 0, 
     LockMode = "人物", 
@@ -31,8 +29,6 @@ local Config = {
     PredictionEnabled = false,
     SmartPrediction = false,
     PredictionAmount = 0.165,
-    PredictionStyle = "标准",
-    AccelerationPrediction = false,
     TeamCheck = false,
     TeamCheckMode = "标准",
     CoverCheck = false,
@@ -71,18 +67,13 @@ local Config = {
     BoxThickness = 1,
     BoxSpeed = 1,
     BoxTransparency = 0,
-    LegitMode = false,
-    AimOffset = 0,
-    ShakePower = 0,
-    MissChance = 0,
-    SmoothnessCurve = "线性",
-    ReactionDelay = 0,
     NotificationEnabled = true,
     NotificationDuration = 2.5,
     NotificationCooldown = 0,
     TextLocked = "已锁定",
     TextUnlocked = "已解锁",
     TextLost = "目标丢失",
+    TextEliminated = "目标死亡",
     HeadshotChance = 0,
     AdminWatchdog = false,
     SilentEnabled = false,
@@ -90,6 +81,7 @@ local Config = {
     SilentHitChance = 100,
     SilentPrediction = 0.165,
     SilentMethod = "Raycast",
+    SilentStickyAiming = false,
     WallbangMode = "无",
     BulletTPMode = "无",
     HitSound = "关闭",
@@ -102,6 +94,7 @@ local Config = {
     SilentQuickButtonTransparency = 0.3,
     HealthVisible = false,
     HealthPosition = "上方",
+    HealthAlignment = "中心",
     HealthTextColor = Color3.fromRGB(255, 255, 255),
     RainbowHealthText = false
 }
@@ -204,6 +197,7 @@ local function playHitSound(soundId)
 end
 
 local function getPositionOnScreen(Vector)
+    if not Camera then return Vector2.zero, false end
     local Vec3, OnScreen = Camera:WorldToViewportPoint(Vector)
     return Vector2.new(Vec3.X, Vec3.Y), OnScreen
 end
@@ -291,26 +285,16 @@ local AimGeneralGroup = AimTab:AddLeftGroupbox("基础参数")
 
 local isLocked = false
 local currentTarget = nil
-local lockedUserId = nil
-local previouslyLockedId = nil
 local healthConnection = nil
+local lastGlobalTarget = nil
+local lastGlobalTargetId = nil
+local silentLockedTarget = nil
 
 AimGeneralGroup:AddToggle('AimEnabled', {
     Text = '开启锁定功能',
     Default = false,
     Callback = function(Value)
         isLocked = Value
-        if not isLocked then
-            ShowNotification(Config.TextUnlocked, "Unlock")
-            currentTarget = nil
-            lockedUserId = nil
-            previouslyLockedId = nil
-            if healthConnection then
-                healthConnection:Disconnect()
-                healthConnection = nil
-            end
-            CleanupVisuals()
-        end
         UpdateQuickButtons()
     end
 })
@@ -354,6 +338,26 @@ AimLogicGroup:AddToggle('WallCheckFallback', {
     Callback = function(Value) Config.WallCheckFallback = Value end
 })
 
+local PredGroup = AimTab:AddLeftGroupbox("预判系统")
+PredGroup:AddToggle('PredictionEnabled', {
+    Text = '启用预判',
+    Default = Config.PredictionEnabled,
+    Callback = function(Value) Config.PredictionEnabled = Value end
+})
+PredGroup:AddToggle('SmartPrediction', {
+    Text = '智能自动预判',
+    Default = Config.SmartPrediction,
+    Callback = function(Value) Config.SmartPrediction = Value end
+})
+PredGroup:AddSlider('PredictionAmount', {
+    Text = '手动预判数值',
+    Default = Config.PredictionAmount,
+    Min = 0,
+    Max = 5,
+    Rounding = 3,
+    Callback = function(Value) Config.PredictionAmount = Value end
+})
+
 local SilentGroup = AimTab:AddRightGroupbox("静默自瞄")
 SilentGroup:AddToggle('SilentEnabled', {
     Text = '启用静默自瞄',
@@ -383,17 +387,10 @@ SilentGroup:AddSlider('SilentHitChance', {
     Rounding = 0,
     Callback = function(Value) Config.SilentHitChance = Value end
 })
-SilentGroup:AddDropdown('WallbangMode', {
-    Text = '穿墙模式',
-    Default = Config.WallbangMode,
-    Values = {'无', '物理穿透 (RaycastParams)', '伪造击中 (SpoofHit)'},
-    Callback = function(Value) Config.WallbangMode = Value end
-})
-SilentGroup:AddDropdown('BulletTPMode', {
-    Text = '子弹传送',
-    Default = Config.BulletTPMode,
-    Values = {'无', '坐标传送', '骨骼传送'},
-    Callback = function(Value) Config.BulletTPMode = Value end
+SilentGroup:AddToggle('SilentStickyAiming', {
+    Text = '粘性瞄准',
+    Default = Config.SilentStickyAiming,
+    Callback = function(Value) Config.SilentStickyAiming = Value end
 })
 SilentGroup:AddToggle('SilentQuickButtonEnabled', {
     Text = '启用静默快捷按钮',
@@ -425,75 +422,23 @@ SilentGroup:AddSlider('SilentQuickButtonTransparency', {
         UpdateQuickButtons()
     end
 })
-
-local LegitGroup = AimTab:AddRightGroupbox("伪装模式")
-LegitGroup:AddToggle('LegitMode', {
-    Text = '启用伪装',
-    Default = Config.LegitMode,
-    Callback = function(Value) Config.LegitMode = Value end
+SilentGroup:AddDropdown('WallbangMode', {
+    Text = '穿墙模式',
+    Default = Config.WallbangMode,
+    Values = {'无', '物理穿透 (RaycastParams)', '伪造击中 (SpoofHit)'},
+    Callback = function(Value) Config.WallbangMode = Value end
 })
-LegitGroup:AddSlider('AimOffset', {
-    Text = '随机偏移',
-    Default = Config.AimOffset,
-    Min = 0,
-    Max = 5,
-    Rounding = 1,
-    Callback = function(Value) Config.AimOffset = Value end
-})
-LegitGroup:AddSlider('ShakePower', {
-    Text = '手抖强度',
-    Default = Config.ShakePower,
-    Min = 0,
-    Max = 10,
-    Rounding = 1,
-    Callback = function(Value) Config.ShakePower = Value end
-})
-LegitGroup:AddSlider('MissChance', {
-    Text = '失误概率',
-    Default = Config.MissChance,
-    Min = 0,
-    Max = 100,
-    Rounding = 0,
-    Callback = function(Value) Config.MissChance = Value end
-})
-LegitGroup:AddSlider('ReactionDelay', {
-    Text = '人类延迟 (秒)',
-    Default = Config.ReactionDelay,
-    Min = 0,
-    Max = 1,
-    Rounding = 2,
-    Callback = function(Value) Config.ReactionDelay = Value end
-})
-LegitGroup:AddDropdown('SmoothnessCurve', {
-    Text = '平滑曲线',
-    Default = Config.SmoothnessCurve,
-    Values = {"线性", "正弦", "二次方", "指数", "弹性", "圆形"},
-    Callback = function(Value) Config.SmoothnessCurve = Value end
+SilentGroup:AddDropdown('BulletTPMode', {
+    Text = '子弹传送',
+    Default = Config.BulletTPMode,
+    Values = {'无', '坐标传送', '骨骼传送'},
+    Callback = function(Value) Config.BulletTPMode = Value end
 })
 
-local PredGroup = AimTab:AddRightGroupbox("预判系统")
-PredGroup:AddToggle('PredictionEnabled', {
-    Text = '启用预判',
-    Default = Config.PredictionEnabled,
-    Callback = function(Value) Config.PredictionEnabled = Value end
-})
-PredGroup:AddToggle('SmartPrediction', {
-    Text = '智能自动预判',
-    Default = Config.SmartPrediction,
-    Callback = function(Value) Config.SmartPrediction = Value end
-})
-PredGroup:AddSlider('PredictionAmount', {
-    Text = '手动预判数值',
-    Default = Config.PredictionAmount,
-    Min = 0,
-    Max = 5,
-    Rounding = 3,
-    Callback = function(Value) Config.PredictionAmount = Value end
-})
 
 local FeedbackGroup = AimTab:AddRightGroupbox("战斗反馈")
 FeedbackGroup:AddSlider('HeadshotChance', {
-    Text = '强制爆头率',
+    Text = '爆头率',
     Default = Config.HeadshotChance,
     Min = 0,
     Max = 100,
@@ -616,6 +561,12 @@ HealthGroup:AddDropdown('HealthPosition', {
     Values = {"上方", "中心", "下方"},
     Callback = function(Value) Config.HealthPosition = Value end
 })
+HealthGroup:AddDropdown('HealthAlignment', {
+    Text = '水平对齐',
+    Default = Config.HealthAlignment,
+    Values = {"左侧", "中心", "右侧"},
+    Callback = function(Value) Config.HealthAlignment = Value end
+})
 HealthGroup:AddLabel('文字颜色'):AddColorPicker('HealthTextColor', {
     Default = Config.HealthTextColor,
     Title = '文字颜色',
@@ -720,6 +671,11 @@ NotifyGroup:AddInput('TextLost', {
     Default = Config.TextLost,
     Callback = function(Value) Config.TextLost = Value end
 })
+NotifyGroup:AddInput('TextEliminated', {
+    Text = '消灭提示词',
+    Default = Config.TextEliminated,
+    Callback = function(Value) Config.TextEliminated = Value end
+})
 
 local AdminGroup = MiscTab:AddRightGroupbox("安全防护")
 AdminGroup:AddToggle('AdminWatchdog', {
@@ -727,48 +683,6 @@ AdminGroup:AddToggle('AdminWatchdog', {
     Default = Config.AdminWatchdog,
     Callback = function(Value) Config.AdminWatchdog = Value end
 })
-
-local function GetPlayer(String)
-    if not String or String == "" then return nil end
-    local Exact = Players:FindFirstChild(String)
-    if Exact then return Exact end
-    
-    local found = {}
-    local lowerStr = String:lower()
-    
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Name:lower():find(lowerStr, 1, true) or p.DisplayName:lower():find(lowerStr, 1, true) then
-            table.insert(found, p)
-        end
-    end
-    
-    if #found == 1 then
-        return found[1]
-    else
-        return nil
-    end
-end
-
-local function GetTeam(String)
-    if not String or String == "" then return nil end
-    local Exact = Teams:FindFirstChild(String)
-    if Exact then return Exact end
-    
-    local found = {}
-    local lowerStr = String:lower()
-    
-    for _, t in ipairs(Teams:GetTeams()) do
-        if t.Name:lower():find(lowerStr, 1, true) then
-            table.insert(found, t)
-        end
-    end
-    
-    if #found == 1 then
-        return found[1]
-    else
-        return nil
-    end
-end
 
 local function GetFormattedPlayerName(p)
     if p.DisplayName and p.DisplayName ~= p.Name then
@@ -957,16 +871,47 @@ TeamListGroup:AddDropdown('TeamBlacklistManager', {
 
 Library:SetWatermark("PureLock System - Obsidian")
 
-local legitOffset = Vector3.zero
-local lastLockTime = 0
 local lastHealth = 0
 local SharedPart = nil
 local lastShotTime = 0
+local lockedUserId = nil
 
-local function getPositionOnScreen(Vector)
-    if not Camera then return Vector2.zero, false end
-    local Vec3, OnScreen = Camera:WorldToViewportPoint(Vector)
-    return Vector2.new(Vec3.X, Vec3.Y), OnScreen
+local function DrawLine(parent, p, a, s, r, color, transp)
+    local f = Instance.new("Frame")
+    f.Name = "Line"
+    f.Parent = parent
+    f.BorderSizePixel = 0
+    f.Position = p
+    f.AnchorPoint = a
+    f.Size = s
+    f.BackgroundColor3 = color
+    f.BackgroundTransparency = transp
+    if r then f.Rotation = r end
+    return f
+end
+
+local function DrawPolyFromPoints(parent, points, thickness, color, transp)
+    for i = 1, #points do
+        local p1 = points[i]
+        local p2 = points[(i % #points) + 1]
+        local center = (p1 + p2) / 2
+        local dist = (p2 - p1).Magnitude
+        local angle = math.atan2(p2.Y - p1.Y, p2.X - p1.X)
+        DrawLine(parent, UDim2.new(center.X, 0, center.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist, 0, 0, thickness), math.deg(angle), color, transp)
+    end
+end
+
+local function DrawTriangleCorner(parent, c, n1, n2, thickness, color, transp)
+    local dir1, dir2 = (n1-c).Unit, (n2-c).Unit
+    local len = 0.3
+    local l1 = c + dir1 * len
+    local l2 = c + dir2 * len
+    local dist1, dist2 = (l1-c).Magnitude, (l2-c).Magnitude
+    local angle1 = math.atan2(dir1.Y, dir1.X)
+    local angle2 = math.atan2(dir2.Y, dir2.X)
+    local center1, center2 = (c+l1)/2, (c+l2)/2
+    DrawLine(parent, UDim2.new(center1.X, 0, center1.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist1, 0, 0, thickness), math.deg(angle1), color, transp)
+    DrawLine(parent, UDim2.new(center2.X, 0, center2.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist2, 0, 0, thickness), math.deg(angle2), color, transp)
 end
 
 local function EnsureBoxVisuals(targetChar)
@@ -1001,51 +946,21 @@ local function EnsureBoxVisuals(targetChar)
     local mf = visualEffect:FindFirstChild("MainFrame")
     if mf then
         if not mf:FindFirstChild("Line") then
-            local function Line(p, a, s, r)
-                local f = Instance.new("Frame", mf)
-                f.Name = "Line"
-                f.BorderSizePixel = 0
-                f.Position = p; f.AnchorPoint = a; f.Size = s
-                f.BackgroundColor3 = Config.BoxColor
-                f.BackgroundTransparency = Config.BoxTransparency
-                if r then f.Rotation = r end
-                return f
-            end
-
-            local function DrawPoly(points)
-                for i = 1, #points do
-                    local p1 = points[i]
-                    local p2 = points[(i % #points) + 1]
-                    local center = (p1 + p2) / 2
-                    local dist = (p2 - p1).Magnitude
-                    local angle = math.atan2(p2.Y - p1.Y, p2.X - p1.X)
-                    Line(UDim2.new(center.X, 0, center.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist, 0, 0, Config.BoxThickness), math.deg(angle))
-                end
-            end
-
             if Config.BoxShape == "方框" then
                 local l, w = UDim2.new(0.43, 0, 0, Config.BoxThickness), UDim2.new(0, Config.BoxThickness, 0.43, 0)
-                Line(UDim2.new(0,0,0,0), Vector2.new(0,0), l); Line(UDim2.new(0,0,0,0), Vector2.new(0,0), w)
-                Line(UDim2.new(1,0,0,0), Vector2.new(1,0), l); Line(UDim2.new(1,0,0,0), Vector2.new(1,0), w)
-                Line(UDim2.new(0,0,1,0), Vector2.new(0,1), l); Line(UDim2.new(0,0,1,0), Vector2.new(0,1), w)
-                Line(UDim2.new(1,0,1,0), Vector2.new(1,1), l); Line(UDim2.new(1,0,1,0), Vector2.new(1,1), w)
+                DrawLine(mf, UDim2.new(0,0,0,0), Vector2.new(0,0), l, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(0,0,0,0), Vector2.new(0,0), w, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(1,0,0,0), Vector2.new(1,0), l, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(1,0,0,0), Vector2.new(1,0), w, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(0,0,1,0), Vector2.new(0,1), l, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(0,0,1,0), Vector2.new(0,1), w, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(1,0,1,0), Vector2.new(1,1), l, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(1,0,1,0), Vector2.new(1,1), w, 0, Config.BoxColor, Config.BoxTransparency)
             elseif Config.BoxShape == "三角形" then
                 local p1, p2, p3 = Vector2.new(0.5, 0), Vector2.new(1, 1), Vector2.new(0, 1)
-                local function DrawCorner(c, n1, n2)
-                    local dir1, dir2 = (n1-c).Unit, (n2-c).Unit
-                    local len = 0.3
-                    local l1 = c + dir1 * len
-                    local l2 = c + dir2 * len
-                    local dist1, dist2 = (l1-c).Magnitude, (l2-c).Magnitude
-                    local angle1 = math.atan2(dir1.Y, dir1.X)
-                    local angle2 = math.atan2(dir2.Y, dir2.X)
-                    local center1, center2 = (c+l1)/2, (c+l2)/2
-                    Line(UDim2.new(center1.X, 0, center1.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist1, 0, 0, Config.BoxThickness), math.deg(angle1))
-                    Line(UDim2.new(center2.X, 0, center2.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist2, 0, 0, Config.BoxThickness), math.deg(angle2))
-                end
-                DrawCorner(p1, p2, p3)
-                DrawCorner(p2, p1, p3)
-                DrawCorner(p3, p1, p2)
+                DrawTriangleCorner(mf, p1, p2, p3, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
+                DrawTriangleCorner(mf, p2, p1, p3, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
+                DrawTriangleCorner(mf, p3, p1, p2, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
             elseif Config.BoxShape == "五角星" then
                 local pts = {}
                 for i = 0, 4 do
@@ -1053,10 +968,10 @@ local function EnsureBoxVisuals(targetChar)
                     table.insert(pts, Vector2.new(0.5 + 0.5 * math.cos(angle), 0.5 + 0.5 * math.sin(angle)))
                 end
                 local starOrder = {pts[1], pts[3], pts[5], pts[2], pts[4]}
-                DrawPoly(starOrder)
+                DrawPolyFromPoints(mf, starOrder, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
             elseif Config.BoxShape == "六角星" then
-                DrawPoly({Vector2.new(0.5, 0), Vector2.new(0.933, 0.75), Vector2.new(0.067, 0.75)})
-                DrawPoly({Vector2.new(0.5, 1), Vector2.new(0.933, 0.25), Vector2.new(0.067, 0.25)})
+                DrawPolyFromPoints(mf, {Vector2.new(0.5, 0), Vector2.new(0.933, 0.75), Vector2.new(0.067, 0.75)}, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
+                DrawPolyFromPoints(mf, {Vector2.new(0.5, 1), Vector2.new(0.933, 0.25), Vector2.new(0.067, 0.25)}, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
             end
         end
         
@@ -1125,14 +1040,15 @@ local function CheckCover(model)
     local head = model:FindFirstChild("Head")
     if not root or not head then return false end
     
+    if not Config.MultiPointCheck then
+        return IsPartVisible(head, {LocalPlayer.Character, Camera})
+    end
+
     local partsToCheck = {head}
-    if Config.MultiPointCheck then
-        table.insert(partsToCheck, root)
-        local possibleParts = {"Left Arm", "Right Arm", "Left Leg", "Right Leg", "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm", "LeftUpperLeg", "RightUpperLeg", "LeftHand", "RightHand", "LeftFoot", "RightFoot"}
-        for _, name in pairs(possibleParts) do
-            local p = model:FindFirstChild(name)
-            if p then table.insert(partsToCheck, p) end
-        end
+    table.insert(partsToCheck, root)
+    for _, name in pairs(possiblePartsToCheck) do
+        local p = model:FindFirstChild(name)
+        if p then table.insert(partsToCheck, p) end
     end
 
     local ignoreList = {LocalPlayer.Character, Camera}
@@ -1142,11 +1058,13 @@ local function CheckCover(model)
     return false
 end
 
-local function GetTargetPart(char)
+local function GetBestPart(char, isSilent)
     if not char then return "Torso" end
     
-    if Config.AimPart == "头部" then
-        if Config.WallCheckFallback then
+    local mode = isSilent and Config.SilentAimPart or Config.AimPart
+    
+    if mode == "头部" then
+        if not isSilent and Config.WallCheckFallback then
             local head = char:FindFirstChild("Head")
             local torso = char:FindFirstChild("HumanoidRootPart")
             if head and torso then
@@ -1161,19 +1079,19 @@ local function GetTargetPart(char)
         return "Head"
     end
 
-    if Config.AimPart == "躯干" then
-        if Config.HeadshotChance > 0 and char:FindFirstChild("Head") and math.random(1,100) <= Config.HeadshotChance then
+    if mode == "躯干" then
+        if not isSilent and Config.HeadshotChance > 0 and char:FindFirstChild("Head") and math.random(1,100) <= Config.HeadshotChance then
             if not Config.CoverCheck or CheckCover(char) then return "Head" end
         end
         return "HumanoidRootPart"
     end
     
     local parts = {}
-    if Config.AimPart == "随机" then
+    if mode == "随机" then
         for _, v in pairs(char:GetChildren()) do if v:IsA("BasePart") then table.insert(parts, v.Name) end end
-    elseif Config.AimPart == "手臂" then
+    elseif mode == "手臂" then
         parts = {"Left Arm","Right Arm","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm"}
-    elseif Config.AimPart == "腿部" then
+    elseif mode == "腿部" then
         parts = {"Left Leg","Right Leg","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg"}
     end
     
@@ -1184,64 +1102,36 @@ local function GetTargetPart(char)
     end
     
     if #visibleParts > 0 then
-        local mousePos = UserInputService:GetMouseLocation()
-        table.sort(visibleParts, function(a,b)
-            local p1 = Camera:WorldToViewportPoint(char[a].Position)
-            local p2 = Camera:WorldToViewportPoint(char[b].Position)
-            return (Vector2.new(p1.X, p1.Y) - mousePos).Magnitude < (Vector2.new(p2.X, p2.Y) - mousePos).Magnitude
-        end)
-        return visibleParts[1]
-    end
-    
-    return "Torso"
-end
-
-local function GetSilentTargetPart(char)
-    if not char then return "Torso" end
-    
-    if Config.SilentAimPart == "头部" then
-        return "Head"
-    end
-
-    if Config.SilentAimPart == "躯干" then
-        return "HumanoidRootPart"
-    end
-    
-    local parts = {}
-    if Config.SilentAimPart == "随机" then
-        for _, v in pairs(char:GetChildren()) do if v:IsA("BasePart") then table.insert(parts, v.Name) end end
-    elseif Config.SilentAimPart == "手臂" then
-        parts = {"Left Arm","Right Arm","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm"}
-    elseif Config.SilentAimPart == "腿部" then
-        parts = {"Left Leg","Right Leg","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg"}
-    end
-    
-    local visibleParts = {}
-    for _, name in ipairs(parts) do
-        local p = char:FindFirstChild(name)
-        if p then table.insert(visibleParts, name) end
-    end
-    
-    if #visibleParts > 0 then
-        local idx = math.random(1, #visibleParts)
-        return visibleParts[idx]
+        if isSilent then
+            local idx = math.random(1, #visibleParts)
+            return visibleParts[idx]
+        else
+            local mousePos = UserInputService:GetMouseLocation()
+            table.sort(visibleParts, function(a,b)
+                local p1 = Camera:WorldToViewportPoint(char[a].Position)
+                local p2 = Camera:WorldToViewportPoint(char[b].Position)
+                return (Vector2.new(p1.X, p1.Y) - mousePos).Magnitude < (Vector2.new(p2.X, p2.Y) - mousePos).Magnitude
+            end)
+            return visibleParts[1]
+        end
     end
     
     return "HumanoidRootPart"
 end
 
-local function IsTeammate(p)
+local function IsTeammate(p, cachedLocalTeam)
     if not Config.TeamCheck then return false end
     if p == LocalPlayer then return true end
     
     local mode = Config.TeamCheckMode or "标准"
     
     if mode == "标准" then
-        if p.Team and p.Team == LocalPlayer.Team then return true end
+        if cachedLocalTeam and p.Team == cachedLocalTeam then return true end
     elseif mode == "属性检测" then
-        local myTeam = LocalPlayer:GetAttribute("Team") or LocalPlayer:GetAttribute("Side") or LocalPlayer:GetAttribute("Faction")
-        local theirTeam = p:GetAttribute("Team") or p:GetAttribute("Side") or p:GetAttribute("Faction")
-        if myTeam and theirTeam and myTeam == theirTeam then return true end
+        if cachedLocalTeam then
+            local theirTeam = p:GetAttribute("Team") or p:GetAttribute("Side") or p:GetAttribute("Faction")
+            if cachedLocalTeam == theirTeam then return true end
+        end
         if LocalPlayer.Character and p.Character then
             local myCharTeam = LocalPlayer.Character:GetAttribute("Team") or LocalPlayer.Character:GetAttribute("Side") or LocalPlayer.Character:GetAttribute("Faction")
             local theirCharTeam = p.Character:GetAttribute("Team") or p.Character:GetAttribute("Side") or p.Character:GetAttribute("Faction")
@@ -1286,6 +1176,18 @@ local function GetSortedTarget()
     local mousePos = Config.FixedFOV and (Camera.ViewportSize / 2) or UserInputService:GetMouseLocation()
     
     local targets = {}
+    local maxDistSq = Config.MaxDistance * Config.MaxDistance
+    local fovRadiusSq = Config.FOVRadius * Config.FOVRadius
+    
+    local myTeamVal = nil
+    if Config.TeamCheck then
+        local mode = Config.TeamCheckMode or "标准"
+        if mode == "标准" then
+            myTeamVal = LocalPlayer.Team
+        elseif mode == "属性检测" then
+            myTeamVal = LocalPlayer:GetAttribute("Team") or LocalPlayer:GetAttribute("Side") or LocalPlayer:GetAttribute("Faction")
+        end
+    end
     
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and p.Character then
@@ -1300,23 +1202,28 @@ local function GetSortedTarget()
                 if p.Team and Config.TeamBlacklist[p.Team.Name] then continue end
             end
             
-            if IsTeammate(p) then continue end
+            if IsTeammate(p, myTeamVal) then continue end
             
             local char = p.Character
             local root = char:FindFirstChild("HumanoidRootPart")
             local hum = char:FindFirstChild("Humanoid")
             if root and hum and hum.Health > 0 then
-                local dist = (root.Position - myRoot.Position).Magnitude
-                if dist <= Config.MaxDistance then
-                    local sPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+                local distVector = root.Position - myRoot.Position
+                local distSq = distVector.X*distVector.X + distVector.Y*distVector.Y + distVector.Z*distVector.Z
+                
+                if distSq <= maxDistSq then
+                    local Vec3, onScreen = Camera:WorldToViewportPoint(root.Position)
                     if (not Config.UseFOV) or onScreen then
                         if not Config.CoverCheck or CheckCover(char) then
-                            local fovDist = (Vector2.new(sPos.X, sPos.Y) - mousePos).Magnitude
-                            if not Config.UseFOV or fovDist <= Config.FOVRadius then
+                            local screenDx = Vec3.X - mousePos.X
+                            local screenDy = Vec3.Y - mousePos.Y
+                            local fovDistSq = screenDx*screenDx + screenDy*screenDy
+                            
+                            if not Config.UseFOV or fovDistSq <= fovRadiusSq then
                                 table.insert(targets, {
                                     Char = char,
-                                    Dist = dist,
-                                    Fov = fovDist,
+                                    DistSq = distSq,
+                                    FovSq = fovDistSq,
                                     Health = hum.Health
                                 })
                             end
@@ -1333,13 +1240,63 @@ local function GetSortedTarget()
         if Config.PriorityMode == "最低血量" then
             return a.Health < b.Health
         elseif Config.PriorityMode == "最近距离" then
-            return a.Dist < b.Dist
+            return a.DistSq < b.DistSq
         else
-            return a.Fov < b.Fov
+            return a.FovSq < b.FovSq
         end
     end)
     
     return targets[1].Char
+end
+
+local function IsValidTarget(char)
+    if not char then return false end
+    if not LocalPlayer.Character then return false end
+    local myRoot = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false end
+    
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChild("Humanoid")
+    if not root or not hum or hum.Health <= 0 then return false end
+    
+    local player = Players:GetPlayerFromCharacter(char)
+    if player then
+        if Config.WhitelistEnabled and Config.Whitelist[player.UserId] then return false end
+        if Config.BlacklistEnabled and Config.Blacklist[player.UserId] then return false end
+        
+        local myTeamVal = nil
+        if Config.TeamCheck then
+            local mode = Config.TeamCheckMode or "标准"
+            if mode == "标准" then
+                myTeamVal = LocalPlayer.Team
+            elseif mode == "属性检测" then
+                myTeamVal = LocalPlayer:GetAttribute("Team") or LocalPlayer:GetAttribute("Side") or LocalPlayer:GetAttribute("Faction")
+            end
+        end
+        if IsTeammate(player, myTeamVal) then return false end
+    end
+    
+    local distVector = root.Position - myRoot.Position
+    local distSq = distVector.X*distVector.X + distVector.Y*distVector.Y + distVector.Z*distVector.Z
+    local maxDistSq = Config.MaxDistance * Config.MaxDistance
+    
+    if distSq > maxDistSq then return false end
+    
+    if Config.CoverCheck and not CheckCover(char) then return false end
+    
+    if Config.UseFOV then
+        local Vec3, onScreen = Camera:WorldToViewportPoint(root.Position)
+        if not onScreen then return false end
+        local mousePos = Config.FixedFOV and (Camera.ViewportSize / 2) or UserInputService:GetMouseLocation()
+        local screenDx = Vec3.X - mousePos.X
+        local screenDy = Vec3.Y - mousePos.Y
+        local fovDistSq = screenDx*screenDx + screenDy*screenDy
+        local fovRadiusSq = Config.FOVRadius * Config.FOVRadius
+        
+        if fovDistSq > fovRadiusSq then return false end
+    end
+    
+    return true
 end
 
 local lastSearch = 0
@@ -1434,14 +1391,23 @@ end))
 for _, p in pairs(Players:GetPlayers()) do CheckAdmin(p) end
 
 table.insert(Connections, RunService.Heartbeat:Connect(function()
-    local t = GetSortedTarget()
+    local t = nil
+    
+    if Config.SilentEnabled and Config.SilentStickyAiming then
+        if silentLockedTarget and IsValidTarget(silentLockedTarget) then
+            t = silentLockedTarget
+        else
+            t = GetSortedTarget()
+            silentLockedTarget = t
+        end
+    else
+        t = GetSortedTarget()
+        silentLockedTarget = nil
+    end
+    
     if t then
         local targetPartName
-        if isLocked then
-            targetPartName = GetTargetPart(t)
-        else
-            targetPartName = GetSilentTargetPart(t)
-        end
+        targetPartName = GetBestPart(t, not isLocked)
         SharedPart = t:FindFirstChild(targetPartName) or t:FindFirstChild("HumanoidRootPart")
     else
         SharedPart = nil
@@ -1529,7 +1495,9 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
                         local r = currentC:FindFirstChild("HumanoidRootPart")
                         local s, o = Camera:WorldToViewportPoint(r.Position)
                         local m = Config.FixedFOV and (Camera.ViewportSize/2) or UserInputService:GetMouseLocation()
-                        if (Vector2.new(s.X, s.Y) - m).Magnitude <= Config.FOVRadius then
+                        local screenDx = s.X - m.X
+                        local screenDy = s.Y - m.Y
+                        if (screenDx*screenDx + screenDy*screenDy) <= (Config.FOVRadius * Config.FOVRadius) then
                             isCurrentValid = true
                         end
                      else
@@ -1544,10 +1512,6 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
                      if p then
                         lockedUserId = p.UserId
                         currentTarget = bestTarget
-                        lastLockTime = now
-                        if Config.LegitMode then
-                            legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
-                        end
                      end
                 else
                      lockedUserId = nil
@@ -1560,12 +1524,6 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
             if bestTarget then
                 local p = Players:GetPlayerFromCharacter(bestTarget)
                 if p then
-                    if lockedUserId ~= p.UserId then
-                        lastLockTime = now
-                        if Config.LegitMode then
-                            legitOffset = Vector3.new(math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10, math.random(-Config.AimOffset*10, Config.AimOffset*10)/10)
-                        end
-                    end
                     lockedUserId = p.UserId
                     currentTarget = bestTarget
                 end
@@ -1576,87 +1534,38 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
         end
         
         if lockedUserId then
-            if lockedUserId ~= previouslyLockedId then
-                local p = Players:GetPlayerByUserId(lockedUserId)
-                if p then
-                    ShowNotification(Config.TextLocked .. " : " .. p.Name, "Lock")
-                end
-                previouslyLockedId = lockedUserId
-                if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
-            end
-
             activeTarget = currentTarget
             
             if currentTarget then
-                local finalPart = GetTargetPart(currentTarget)
+                local finalPart = GetBestPart(currentTarget, false)
                 if currentTarget:FindFirstChild(finalPart) then
-                    local proceed = true
-                    if Config.LegitMode then
-                        if (now - lastLockTime < Config.ReactionDelay) then proceed = false end
-                        if math.random(1, 100) <= Config.MissChance then proceed = false end
+                    local aimPos = currentTarget[finalPart].Position
+                    
+                    if Config.PredictionEnabled and currentTarget:FindFirstChild("HumanoidRootPart") then
+                        local t = usedPrediction
+                        local vel = currentTarget.HumanoidRootPart.AssemblyLinearVelocity
+                        aimPos = aimPos + (vel * t)
                     end
                     
-                    if proceed then
-                        local aimPos = currentTarget[finalPart].Position
-                        
-                        if Config.LegitMode then 
-                            aimPos = aimPos + legitOffset 
-                            if Config.ShakePower > 0 then
-                                aimPos = aimPos + Vector3.new(
-                                    (math.random() - 0.5) * 2 * Config.ShakePower,
-                                    (math.random() - 0.5) * 2 * Config.ShakePower,
-                                    (math.random() - 0.5) * 2 * Config.ShakePower
-                                )
-                            end
+                    local rawSens = math.clamp(Config.Sensitivity, 0, 100)
+                    local lerpFactor = (100 - rawSens) / 100
+                    
+                    if Config.LockMode == "人物" and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        pcall(function()
+                            LocalPlayer.Character.Humanoid.AutoRotate = false
+                            local currentCF = LocalPlayer.Character.HumanoidRootPart.CFrame
+                            local targetLook = CFrame.lookAt(currentCF.Position, Vector3.new(aimPos.X, currentCF.Position.Y, aimPos.Z))
+                            LocalPlayer.Character.HumanoidRootPart.CFrame = currentCF:Lerp(targetLook, lerpFactor)
+                        end)
+                    else
+                        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then 
+                            pcall(function() LocalPlayer.Character.Humanoid.AutoRotate = true end)
                         end
-                        
-                        if Config.PredictionEnabled and currentTarget:FindFirstChild("HumanoidRootPart") then
-                            local t = usedPrediction
-                            local vel = currentTarget.HumanoidRootPart.AssemblyLinearVelocity
-                            aimPos = aimPos + (vel * t)
-                        end
-                        
-                        local rawSens = math.clamp(Config.Sensitivity, 0, 100)
-                        local lerpFactor = (100 - rawSens) / 100
-                        
-                        if Config.LegitMode then
-                            local x = math.clamp(lerpFactor, 0, 1)
-                            if Config.SmoothnessCurve == "正弦" then
-                                lerpFactor = math.sin(x * math.pi / 2)
-                            elseif Config.SmoothnessCurve == "二次方" then
-                                lerpFactor = x * x
-                            elseif Config.SmoothnessCurve == "指数" then
-                                lerpFactor = 2^(10 * (x - 1))
-                            elseif Config.SmoothnessCurve == "圆形" then
-                                lerpFactor = 1 - math.sqrt(1 - x * x)
-                            elseif Config.SmoothnessCurve == "弹性" then
-                                 lerpFactor = x == 0 and 0 or x == 1 and 1 or -2^(10 * x - 10) * math.sin((x * 10 - 10.75) * ((2 * math.pi) / 3))
-                            end
-                        end
-                        
-                        if Config.LockMode == "人物" and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                            pcall(function()
-                                LocalPlayer.Character.Humanoid.AutoRotate = false
-                                local currentCF = LocalPlayer.Character.HumanoidRootPart.CFrame
-                                local targetLook = CFrame.lookAt(currentCF.Position, Vector3.new(aimPos.X, currentCF.Position.Y, aimPos.Z))
-                                LocalPlayer.Character.HumanoidRootPart.CFrame = currentCF:Lerp(targetLook, lerpFactor)
-                            end)
-                        else
-                            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then 
-                                pcall(function() LocalPlayer.Character.Humanoid.AutoRotate = true end)
-                            end
-                            local curCF = Camera.CFrame
-                            local targetCF = CFrame.lookAt(curCF.Position, aimPos)
-                            Camera.CFrame = curCF:Lerp(targetCF, lerpFactor)
-                        end
+                        local curCF = Camera.CFrame
+                        local targetCF = CFrame.lookAt(curCF.Position, aimPos)
+                        Camera.CFrame = curCF:Lerp(targetCF, lerpFactor)
                     end
                 end
-            end
-        else
-            if previouslyLockedId then
-                ShowNotification(Config.TextLost, "Warn")
-                previouslyLockedId = nil
-                if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
             end
         end
     else
@@ -1664,12 +1573,30 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
             activeTarget = SharedPart.Parent
         end
         lockedUserId = nil
-        previouslyLockedId = nil
         currentTarget = nil
-        if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
             LocalPlayer.Character.Humanoid.AutoRotate = true
         end
+    end
+    
+    if activeTarget ~= lastGlobalTarget then
+        if activeTarget then
+            local p = Players:GetPlayerFromCharacter(activeTarget)
+            if p then
+                ShowNotification(Config.TextLocked .. " : " .. p.Name, "Lock")
+            end
+            if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
+        else
+            if lastGlobalTarget then
+                if lastGlobalTarget:FindFirstChild("Humanoid") and lastGlobalTarget.Humanoid.Health <= 0 then
+                     ShowNotification(Config.TextEliminated, "Success")
+                else
+                     ShowNotification(Config.TextLost, "Warn")
+                end
+            end
+            if healthConnection then healthConnection:Disconnect(); healthConnection = nil end
+        end
+        lastGlobalTarget = activeTarget
     end
     
     if activeTarget then
