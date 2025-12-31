@@ -684,7 +684,7 @@ FilterGroup:AddToggle('CoverCheck', {
 FilterGroup:AddSlider('MultiPointScale', {
     Text = '多点检测部位数量',
     Default = Config.MultiPointScale,
-    Min = 0,
+    Min = 1,
     Max = 18,
     Rounding = 0,
     Callback = function(Value) Config.MultiPointScale = Value end
@@ -1098,10 +1098,6 @@ local function CheckCover(model)
     local head = model:FindFirstChild("Head")
     if not root or not head then return false end
     
-    if Config.MultiPointScale <= 0 then
-        return IsPartVisible(head, {LocalPlayer.Character, Camera})
-    end
-
     local partsToCheck = {head}
     table.insert(partsToCheck, root)
     
