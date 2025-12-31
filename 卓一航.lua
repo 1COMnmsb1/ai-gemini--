@@ -1797,10 +1797,7 @@ local function ValidateArguments(Args, RayMethod)
     return Matches >= RayMethod.ArgCountRequired
 end
 
-local oldNamecall = hookmetamethod(game, "__namecall")
-local oldIndex = hookmetamethod(game, "__index")
-local oldRayNew = hookfunction(Ray.new)
-
+local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
     local Method = getnamecallmethod()
     local Arguments = {...}
