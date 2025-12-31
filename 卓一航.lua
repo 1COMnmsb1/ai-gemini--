@@ -20,7 +20,7 @@ local Toggles = Library.Toggles
 
 local Connections = {}
 
-local possiblePartsToCheck = {"Left Arm", "Right Arm", "Left Leg", "Right Leg", "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm", "LeftUpperLeg", "RightUpperLeg", "LeftHand", "RightHand", "LeftFoot", "RightFoot"}
+local possiblePartsToCheck = {"Left Arm", "Right Arm", "Left Leg", "Right Leg", "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm", "LeftUpperLeg", "RightUpperLeg", "LeftHand", "RightHand", "LeftFoot", "RightFoot", "Head", "UpperTorso", "LowerTorso", "Torso"}
 
 local Config = {
     Sensitivity = 0, 
@@ -30,9 +30,9 @@ local Config = {
     SmartPrediction = false,
     PredictionAmount = 0.165,
     TeamCheck = false,
-    TeamCheckMode = "标准",
+    TeamCheckMode = "队伍标签",
     CoverCheck = false,
-    MultiPointCheck = false,
+    MultiPointScale = 18,
     WallCheckFallback = false, 
     MaxDistance = 2000,
     UseFOV = false,
@@ -41,6 +41,8 @@ local Config = {
     UserFOVRadius = 130, 
     FixedFOV = false,
     FOVColor = Color3.fromRGB(255, 255, 255),
+    FOVThickness = 1,
+    FOVTransparency = 0.6,
     BoxVisible = false,
     BoxColor = Color3.fromRGB(255, 255, 255),
     BoxShape = "方框",
@@ -50,9 +52,12 @@ local Config = {
     TracerThickness = 1,
     TracerTransparency = 0,
     RainbowFOV = false,
+    RainbowFOVSpeed = 1,
     RainbowBox = false,
+    RainbowBoxSpeed = 1,
     RainbowRing = false,
     RainbowTracer = false,
+    RainbowTracerSpeed = 1,
     WhitelistEnabled = false,
     BlacklistEnabled = false,
     Whitelist = {},
@@ -75,7 +80,6 @@ local Config = {
     TextLost = "目标丢失",
     TextEliminated = "目标死亡",
     HeadshotChance = 0,
-    AdminWatchdog = false,
     SilentEnabled = false,
     SilentAimPart = "躯干",
     SilentHitChance = 100,
@@ -96,7 +100,8 @@ local Config = {
     HealthPosition = "上方",
     HealthAlignment = "中心",
     HealthTextColor = Color3.fromRGB(255, 255, 255),
-    RainbowHealthText = false
+    RainbowHealthText = false,
+    RainbowHealthSpeed = 1
 }
 
 local HitSounds = {
@@ -228,7 +233,7 @@ local function ShowNotification(title, type, force)
     if not Config.NotificationEnabled then return end
     if not force and tick() - lastNotifyTime < Config.NotificationCooldown then return end
     lastNotifyTime = tick()
-    Library:Notify(title, 3)
+    Library:Notify(title, Config.NotificationDuration)
 end
 
 local VisualsGui = Instance.new("ScreenGui")
@@ -269,7 +274,7 @@ local function CleanupVisuals()
 end
 
 local Window = Library:CreateWindow({
-    Title = "通用瞄准",
+    Title = "卓一航瞄准",
     Footer = "作者:卓一航",
     Theme = "Dark",
     Accent = "#00ff00"
@@ -478,6 +483,22 @@ FOVGroup:AddSlider('UserFOVRadius', {
         Config.UserFOVRadius = Value
     end
 })
+FOVGroup:AddSlider('FOVThickness', {
+    Text = '圆圈粗细',
+    Default = Config.FOVThickness,
+    Min = 1,
+    Max = 10,
+    Rounding = 0,
+    Callback = function(Value) Config.FOVThickness = Value end
+})
+FOVGroup:AddSlider('FOVTransparency', {
+    Text = '圆圈透明度',
+    Default = Config.FOVTransparency,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(Value) Config.FOVTransparency = Value end
+})
 FOVGroup:AddToggle('FixedFOV', {
     Text = '固定在屏幕中心',
     Default = Config.FixedFOV,
@@ -492,6 +513,14 @@ FOVGroup:AddToggle('RainbowFOV', {
     Text = '彩虹渐变模式',
     Default = Config.RainbowFOV,
     Callback = function(Value) Config.RainbowFOV = Value end
+})
+FOVGroup:AddSlider('RainbowFOVSpeed', {
+    Text = '彩虹变换速度',
+    Default = Config.RainbowFOVSpeed,
+    Min = 0.1,
+    Max = 10,
+    Rounding = 1,
+    Callback = function(Value) Config.RainbowFOVSpeed = Value end
 })
 
 local BoxGroup = VisualsTab:AddRightGroupbox("锁定框样式")
@@ -548,6 +577,14 @@ BoxGroup:AddToggle('RainbowBox', {
     Default = Config.RainbowBox,
     Callback = function(Value) Config.RainbowBox = Value end
 })
+BoxGroup:AddSlider('RainbowBoxSpeed', {
+    Text = '彩虹变换速度',
+    Default = Config.RainbowBoxSpeed,
+    Min = 0.1,
+    Max = 10,
+    Rounding = 1,
+    Callback = function(Value) Config.RainbowBoxSpeed = Value end
+})
 
 local HealthGroup = VisualsTab:AddRightGroupbox("生命值显示")
 HealthGroup:AddToggle('HealthVisible', {
@@ -576,6 +613,14 @@ HealthGroup:AddToggle('RainbowHealthText', {
     Text = '彩虹渐变模式',
     Default = Config.RainbowHealthText,
     Callback = function(Value) Config.RainbowHealthText = Value end
+})
+HealthGroup:AddSlider('RainbowHealthSpeed', {
+    Text = '彩虹变换速度',
+    Default = Config.RainbowHealthSpeed,
+    Min = 0.1,
+    Max = 10,
+    Rounding = 1,
+    Callback = function(Value) Config.RainbowHealthSpeed = Value end
 })
 
 local TracerGroup = VisualsTab:AddLeftGroupbox("追踪线样式")
@@ -610,6 +655,14 @@ TracerGroup:AddToggle('RainbowTracer', {
     Default = Config.RainbowTracer,
     Callback = function(Value) Config.RainbowTracer = Value end
 })
+TracerGroup:AddSlider('RainbowTracerSpeed', {
+    Text = '彩虹变换速度',
+    Default = Config.RainbowTracerSpeed,
+    Min = 0.1,
+    Max = 10,
+    Rounding = 1,
+    Callback = function(Value) Config.RainbowTracerSpeed = Value end
+})
 
 local FilterGroup = MiscTab:AddLeftGroupbox("过滤条件")
 FilterGroup:AddToggle('TeamCheck', {
@@ -620,7 +673,7 @@ FilterGroup:AddToggle('TeamCheck', {
 FilterGroup:AddDropdown('TeamCheckMode', {
     Text = '队伍判断模式',
     Default = Config.TeamCheckMode,
-    Values = {"标准", "属性检测", "对象检测", "文件夹检测", "榜单检测"},
+    Values = {"队伍标签", "属性检测", "对象检测", "文件夹检测", "榜单检测"},
     Callback = function(Value) Config.TeamCheckMode = Value end
 })
 FilterGroup:AddToggle('CoverCheck', {
@@ -628,10 +681,13 @@ FilterGroup:AddToggle('CoverCheck', {
     Default = Config.CoverCheck,
     Callback = function(Value) Config.CoverCheck = Value end
 })
-FilterGroup:AddToggle('MultiPointCheck', {
-    Text = '多点检测',
-    Default = Config.MultiPointCheck,
-    Callback = function(Value) Config.MultiPointCheck = Value end
+FilterGroup:AddSlider('MultiPointScale', {
+    Text = '多点检测部位数量',
+    Default = Config.MultiPointScale,
+    Min = 0,
+    Max = 18,
+    Rounding = 0,
+    Callback = function(Value) Config.MultiPointScale = Value end
 })
 FilterGroup:AddSlider('MaxDistance', {
     Text = '最大锁定距离',
@@ -656,6 +712,14 @@ NotifyGroup:AddSlider('NotificationCooldown', {
     Rounding = 1,
     Callback = function(Value) Config.NotificationCooldown = Value end
 })
+NotifyGroup:AddSlider('NotificationDuration', {
+    Text = '通知持续时间',
+    Default = Config.NotificationDuration,
+    Min = 1,
+    Max = 10,
+    Rounding = 1,
+    Callback = function(Value) Config.NotificationDuration = Value end
+})
 NotifyGroup:AddInput('TextLocked', {
     Text = '锁定提示词',
     Default = Config.TextLocked,
@@ -675,13 +739,6 @@ NotifyGroup:AddInput('TextEliminated', {
     Text = '消灭提示词',
     Default = Config.TextEliminated,
     Callback = function(Value) Config.TextEliminated = Value end
-})
-
-local AdminGroup = MiscTab:AddRightGroupbox("安全防护")
-AdminGroup:AddToggle('AdminWatchdog', {
-    Text = '管理员检测',
-    Default = Config.AdminWatchdog,
-    Callback = function(Value) Config.AdminWatchdog = Value end
 })
 
 local function GetFormattedPlayerName(p)
@@ -876,7 +933,7 @@ local SharedPart = nil
 local lastShotTime = 0
 local lockedUserId = nil
 
-local function DrawLine(parent, p, a, s, r, color, transp)
+local function DrawLine(parent, p, a, s, r, color, transp, boxRainbowColor)
     local f = Instance.new("Frame")
     f.Name = "Line"
     f.Parent = parent
@@ -886,22 +943,25 @@ local function DrawLine(parent, p, a, s, r, color, transp)
     f.Size = s
     f.BackgroundColor3 = color
     f.BackgroundTransparency = transp
+    if boxRainbowColor and Config.RainbowBox then
+        f.BackgroundColor3 = boxRainbowColor
+    end
     if r then f.Rotation = r end
     return f
 end
 
-local function DrawPolyFromPoints(parent, points, thickness, color, transp)
+local function DrawPolyFromPoints(parent, points, thickness, color, transp, boxRainbowColor)
     for i = 1, #points do
         local p1 = points[i]
         local p2 = points[(i % #points) + 1]
         local center = (p1 + p2) / 2
         local dist = (p2 - p1).Magnitude
         local angle = math.atan2(p2.Y - p1.Y, p2.X - p1.X)
-        DrawLine(parent, UDim2.new(center.X, 0, center.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist, 0, 0, thickness), math.deg(angle), color, transp)
+        DrawLine(parent, UDim2.new(center.X, 0, center.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist, 0, 0, thickness), math.deg(angle), color, transp, boxRainbowColor)
     end
 end
 
-local function DrawTriangleCorner(parent, c, n1, n2, thickness, color, transp)
+local function DrawTriangleCorner(parent, c, n1, n2, thickness, color, transp, boxRainbowColor)
     local dir1, dir2 = (n1-c).Unit, (n2-c).Unit
     local len = 0.3
     local l1 = c + dir1 * len
@@ -910,11 +970,11 @@ local function DrawTriangleCorner(parent, c, n1, n2, thickness, color, transp)
     local angle1 = math.atan2(dir1.Y, dir1.X)
     local angle2 = math.atan2(dir2.Y, dir2.X)
     local center1, center2 = (c+l1)/2, (c+l2)/2
-    DrawLine(parent, UDim2.new(center1.X, 0, center1.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist1, 0, 0, thickness), math.deg(angle1), color, transp)
-    DrawLine(parent, UDim2.new(center2.X, 0, center2.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist2, 0, 0, thickness), math.deg(angle2), color, transp)
+    DrawLine(parent, UDim2.new(center1.X, 0, center1.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist1, 0, 0, thickness), math.deg(angle1), color, transp, boxRainbowColor)
+    DrawLine(parent, UDim2.new(center2.X, 0, center2.Y, 0), Vector2.new(0.5, 0.5), UDim2.new(dist2, 0, 0, thickness), math.deg(angle2), color, transp, boxRainbowColor)
 end
 
-local function EnsureBoxVisuals(targetChar)
+local function EnsureBoxVisuals(targetChar, boxRainbowColor)
     if not Config.BoxVisible then CleanupVisuals() return end
     if not targetChar then CleanupVisuals() return end
     local root = targetChar:FindFirstChild("HumanoidRootPart")
@@ -948,19 +1008,19 @@ local function EnsureBoxVisuals(targetChar)
         if not mf:FindFirstChild("Line") then
             if Config.BoxShape == "方框" then
                 local l, w = UDim2.new(0.43, 0, 0, Config.BoxThickness), UDim2.new(0, Config.BoxThickness, 0.43, 0)
-                DrawLine(mf, UDim2.new(0,0,0,0), Vector2.new(0,0), l, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(0,0,0,0), Vector2.new(0,0), w, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(1,0,0,0), Vector2.new(1,0), l, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(1,0,0,0), Vector2.new(1,0), w, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(0,0,1,0), Vector2.new(0,1), l, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(0,0,1,0), Vector2.new(0,1), w, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(1,0,1,0), Vector2.new(1,1), l, 0, Config.BoxColor, Config.BoxTransparency)
-                DrawLine(mf, UDim2.new(1,0,1,0), Vector2.new(1,1), w, 0, Config.BoxColor, Config.BoxTransparency)
+                DrawLine(mf, UDim2.new(0,0,0,0), Vector2.new(0,0), l, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(0,0,0,0), Vector2.new(0,0), w, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(1,0,0,0), Vector2.new(1,0), l, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(1,0,0,0), Vector2.new(1,0), w, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(0,0,1,0), Vector2.new(0,1), l, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(0,0,1,0), Vector2.new(0,1), w, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(1,0,1,0), Vector2.new(1,1), l, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawLine(mf, UDim2.new(1,0,1,0), Vector2.new(1,1), w, 0, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
             elseif Config.BoxShape == "三角形" then
                 local p1, p2, p3 = Vector2.new(0.5, 0), Vector2.new(1, 1), Vector2.new(0, 1)
-                DrawTriangleCorner(mf, p1, p2, p3, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
-                DrawTriangleCorner(mf, p2, p1, p3, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
-                DrawTriangleCorner(mf, p3, p1, p2, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
+                DrawTriangleCorner(mf, p1, p2, p3, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawTriangleCorner(mf, p2, p1, p3, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawTriangleCorner(mf, p3, p1, p2, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
             elseif Config.BoxShape == "五角星" then
                 local pts = {}
                 for i = 0, 4 do
@@ -968,21 +1028,19 @@ local function EnsureBoxVisuals(targetChar)
                     table.insert(pts, Vector2.new(0.5 + 0.5 * math.cos(angle), 0.5 + 0.5 * math.sin(angle)))
                 end
                 local starOrder = {pts[1], pts[3], pts[5], pts[2], pts[4]}
-                DrawPolyFromPoints(mf, starOrder, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
+                DrawPolyFromPoints(mf, starOrder, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
             elseif Config.BoxShape == "六角星" then
-                DrawPolyFromPoints(mf, {Vector2.new(0.5, 0), Vector2.new(0.933, 0.75), Vector2.new(0.067, 0.75)}, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
-                DrawPolyFromPoints(mf, {Vector2.new(0.5, 1), Vector2.new(0.933, 0.25), Vector2.new(0.067, 0.25)}, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency)
+                DrawPolyFromPoints(mf, {Vector2.new(0.5, 0), Vector2.new(0.933, 0.75), Vector2.new(0.067, 0.75)}, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
+                DrawPolyFromPoints(mf, {Vector2.new(0.5, 1), Vector2.new(0.933, 0.25), Vector2.new(0.067, 0.25)}, Config.BoxThickness, Config.BoxColor, Config.BoxTransparency, boxRainbowColor)
             end
         end
         
         mf.Rotation = mf.Rotation + Config.BoxSpeed
         
-        local rainbowColor = Color3.fromHSV(tick() % 5 / 5, 1, 1)
-        
         for _, v in pairs(mf:GetChildren()) do
             if v:IsA("Frame") then
                 if Config.RainbowBox then
-                    v.BackgroundColor3 = rainbowColor
+                    v.BackgroundColor3 = boxRainbowColor
                 else
                     v.BackgroundColor3 = Config.BoxColor
                 end
@@ -1040,13 +1098,17 @@ local function CheckCover(model)
     local head = model:FindFirstChild("Head")
     if not root or not head then return false end
     
-    if not Config.MultiPointCheck then
+    if Config.MultiPointScale <= 0 then
         return IsPartVisible(head, {LocalPlayer.Character, Camera})
     end
 
     local partsToCheck = {head}
     table.insert(partsToCheck, root)
-    for _, name in pairs(possiblePartsToCheck) do
+    
+    local maxChecks = math.min(#possiblePartsToCheck, Config.MultiPointScale)
+    
+    for i = 1, maxChecks do
+        local name = possiblePartsToCheck[i]
         local p = model:FindFirstChild(name)
         if p then table.insert(partsToCheck, p) end
     end
@@ -1058,74 +1120,67 @@ local function CheckCover(model)
     return false
 end
 
-local function GetBestPart(char, isSilent)
-    if not char then return "Torso" end
+local function GetSmartTargetPart(char, isSilent)
+    if not char then return nil end
+    local preferredPartName = isSilent and Config.SilentAimPart or Config.AimPart
     
-    local mode = isSilent and Config.SilentAimPart or Config.AimPart
-    
-    if mode == "头部" then
-        if not isSilent and Config.WallCheckFallback then
-            local head = char:FindFirstChild("Head")
-            local torso = char:FindFirstChild("HumanoidRootPart")
-            if head and torso then
-                local ignoreList = {LocalPlayer.Character, Camera}
-                if not IsPartVisible(head, ignoreList) then
-                    if IsPartVisible(torso, ignoreList) then
-                        return "HumanoidRootPart"
+    local parts = {}
+    if preferredPartName == "随机" then
+        for _, v in pairs(char:GetChildren()) do 
+            if v:IsA("BasePart") then table.insert(parts, v) end 
+        end
+        if #parts > 0 then
+            return parts[math.random(1, #parts)]
+        end
+        return char:FindFirstChild("HumanoidRootPart")
+    end
+
+    local preferredPart = char:FindFirstChild(preferredPartName)
+    if not preferredPart then 
+        if preferredPartName == "躯干" then preferredPart = char:FindFirstChild("HumanoidRootPart") end
+        if preferredPartName == "头部" then preferredPart = char:FindFirstChild("Head") end
+    end
+    if not preferredPart then preferredPart = char:FindFirstChild("HumanoidRootPart") end
+
+    if IsPartVisible(preferredPart, {LocalPlayer.Character, Camera}) then
+        return preferredPart
+    end
+
+    if Config.WallCheckFallback then
+        local bestPart = nil
+        local bestDist = 99999
+        local mousePos = UserInputService:GetMouseLocation()
+
+        for _, partName in ipairs(possiblePartsToCheck) do
+            local part = char:FindFirstChild(partName)
+            if part and part:IsA("BasePart") then
+                if IsPartVisible(part, {LocalPlayer.Character, Camera}) then
+                    if isSilent then
+                        return part
+                    else
+                        local screenPos = Camera:WorldToViewportPoint(part.Position)
+                        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                        if dist < bestDist then
+                            bestDist = dist
+                            bestPart = part
+                        end
                     end
                 end
             end
         end
-        return "Head"
+        if bestPart then return bestPart end
     end
 
-    if mode == "躯干" then
-        if not isSilent and Config.HeadshotChance > 0 and char:FindFirstChild("Head") and math.random(1,100) <= Config.HeadshotChance then
-            if not Config.CoverCheck or CheckCover(char) then return "Head" end
-        end
-        return "HumanoidRootPart"
-    end
-    
-    local parts = {}
-    if mode == "随机" then
-        for _, v in pairs(char:GetChildren()) do if v:IsA("BasePart") then table.insert(parts, v.Name) end end
-    elseif mode == "手臂" then
-        parts = {"Left Arm","Right Arm","LeftUpperArm","RightUpperArm","LeftLowerArm","RightLowerArm"}
-    elseif mode == "腿部" then
-        parts = {"Left Leg","Right Leg","LeftUpperLeg","RightUpperLeg","LeftLowerLeg","RightLowerLeg"}
-    end
-    
-    local visibleParts = {}
-    for _, name in ipairs(parts) do
-        local p = char:FindFirstChild(name)
-        if p then table.insert(visibleParts, name) end
-    end
-    
-    if #visibleParts > 0 then
-        if isSilent then
-            local idx = math.random(1, #visibleParts)
-            return visibleParts[idx]
-        else
-            local mousePos = UserInputService:GetMouseLocation()
-            table.sort(visibleParts, function(a,b)
-                local p1 = Camera:WorldToViewportPoint(char[a].Position)
-                local p2 = Camera:WorldToViewportPoint(char[b].Position)
-                return (Vector2.new(p1.X, p1.Y) - mousePos).Magnitude < (Vector2.new(p2.X, p2.Y) - mousePos).Magnitude
-            end)
-            return visibleParts[1]
-        end
-    end
-    
-    return "HumanoidRootPart"
+    return preferredPart
 end
 
 local function IsTeammate(p, cachedLocalTeam)
     if not Config.TeamCheck then return false end
     if p == LocalPlayer then return true end
     
-    local mode = Config.TeamCheckMode or "标准"
+    local mode = Config.TeamCheckMode or "队伍标签"
     
-    if mode == "标准" then
+    if mode == "队伍标签" then
         if cachedLocalTeam and p.Team == cachedLocalTeam then return true end
     elseif mode == "属性检测" then
         if cachedLocalTeam then
@@ -1181,8 +1236,8 @@ local function GetSortedTarget()
     
     local myTeamVal = nil
     if Config.TeamCheck then
-        local mode = Config.TeamCheckMode or "标准"
-        if mode == "标准" then
+        local mode = Config.TeamCheckMode or "队伍标签"
+        if mode == "队伍标签" then
             myTeamVal = LocalPlayer.Team
         elseif mode == "属性检测" then
             myTeamVal = LocalPlayer:GetAttribute("Team") or LocalPlayer:GetAttribute("Side") or LocalPlayer:GetAttribute("Faction")
@@ -1266,8 +1321,8 @@ local function IsValidTarget(char)
         
         local myTeamVal = nil
         if Config.TeamCheck then
-            local mode = Config.TeamCheckMode or "标准"
-            if mode == "标准" then
+            local mode = Config.TeamCheckMode or "队伍标签"
+            if mode == "队伍标签" then
                 myTeamVal = LocalPlayer.Team
             elseif mode == "属性检测" then
                 myTeamVal = LocalPlayer:GetAttribute("Team") or LocalPlayer:GetAttribute("Side") or LocalPlayer:GetAttribute("Faction")
@@ -1356,15 +1411,7 @@ AimGeneralGroup:AddSlider('AimQuickButtonTransparency', {
 
 SetupQuickButton(AimButton, "自瞄", 0, Toggles.AimEnabled, Config.AimQuickButtonSize, Config.AimQuickButtonTransparency)
 
-local function CheckAdmin(player)
-    if not Config.AdminWatchdog then return end
-    if player:GetAttribute("isAdmin") or player:GetAttribute("Admin") or player:GetAttribute("Rank") then
-        ShowNotification("警告: 疑似管理员在场 - " .. player.Name, "Danger", true)
-    end
-end
-
 table.insert(Connections, Players.PlayerAdded:Connect(function(p)
-    CheckAdmin(p)
     local allPlayers = GetAllPlayerNames()
     Options.WhitelistManager:SetValues(allPlayers)
     Options.BlacklistManager:SetValues(allPlayers)
@@ -1388,8 +1435,6 @@ table.insert(Connections, Teams.ChildAdded:Connect(function()
     Options.TeamBlacklistManager:SetValue(GetTeamBlacklistTable())
 end))
 
-for _, p in pairs(Players:GetPlayers()) do CheckAdmin(p) end
-
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     local t = nil
     
@@ -1406,9 +1451,7 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
     end
     
     if t then
-        local targetPartName
-        targetPartName = GetBestPart(t, not isLocked)
-        SharedPart = t:FindFirstChild(targetPartName) or t:FindFirstChild("HumanoidRootPart")
+        SharedPart = GetSmartTargetPart(t, true)
     else
         SharedPart = nil
     end
@@ -1437,13 +1480,18 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
         isLocked = false
     end
     
-    local rainbowColor = Color3.fromHSV(now % 5 / 5, 1, 1)
-    if Config.RainbowFOV then Config.FOVColor = rainbowColor end
-    if Config.RainbowBox then Config.BoxColor = rainbowColor end
-    if Config.RainbowRing then Config.RingColor = rainbowColor end
-    if Config.RainbowTracer then Config.TracerColor = rainbowColor end
+    local fovRainbow = Color3.fromHSV(now * Config.RainbowFOVSpeed % 1, 1, 1)
+    local boxRainbow = Color3.fromHSV(now * Config.RainbowBoxSpeed % 1, 1, 1)
+    local healthRainbow = Color3.fromHSV(now * Config.RainbowHealthSpeed % 1, 1, 1)
+    local tracerRainbow = Color3.fromHSV(now * Config.RainbowTracerSpeed % 1, 1, 1)
+
+    if Config.RainbowFOV then Config.FOVColor = fovRainbow end
+    if Config.RainbowBox then Config.BoxColor = boxRainbow end
+    if Config.RainbowTracer then Config.TracerColor = tracerRainbow end
     
     FOVStroke.Color = Config.FOVColor
+    FOVStroke.Thickness = Config.FOVThickness
+    FOVStroke.Transparency = Config.FOVTransparency
 
     Config.FOVRadius = Config.UserFOVRadius
     
@@ -1537,9 +1585,9 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
             activeTarget = currentTarget
             
             if currentTarget then
-                local finalPart = GetBestPart(currentTarget, false)
-                if currentTarget:FindFirstChild(finalPart) then
-                    local aimPos = currentTarget[finalPart].Position
+                local finalPart = GetSmartTargetPart(currentTarget, false)
+                if finalPart then
+                    local aimPos = finalPart.Position
                     
                     if Config.PredictionEnabled and currentTarget:FindFirstChild("HumanoidRootPart") then
                         local t = usedPrediction
@@ -1601,7 +1649,7 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     
     if activeTarget then
         if Config.BoxVisible then
-            EnsureBoxVisuals(activeTarget)
+            EnsureBoxVisuals(activeTarget, boxRainbow)
         else
             if visualEffect then visualEffect:Destroy(); visualEffect = nil end
         end
@@ -1678,7 +1726,7 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
             if label then
                 label.Text = tostring(math.floor(activeTarget.Humanoid.Health))
                 if Config.RainbowHealthText then
-                    label.TextColor3 = rainbowColor
+                    label.TextColor3 = healthRainbow
                 else
                     label.TextColor3 = Config.HealthTextColor
                 end
@@ -1749,7 +1797,10 @@ local function ValidateArguments(Args, RayMethod)
     return Matches >= RayMethod.ArgCountRequired
 end
 
-local oldNamecall
+local oldNamecall = hookmetamethod(game, "__namecall")
+local oldIndex = hookmetamethod(game, "__index")
+local oldRayNew = hookfunction(Ray.new)
+
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
     local Method = getnamecallmethod()
     local Arguments = {...}
@@ -1778,7 +1829,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
                     local function getDirection(Origin, Position)
                         return (Position - Origin).Unit * 1000
                     end
-                    Arguments[2] = Ray.new(Arguments[2].Origin, getDirection(Arguments[2].Origin, SharedPart.Position))
+                    Arguments[2] = oldRayNew(Arguments[2].Origin, getDirection(Arguments[2].Origin, SharedPart.Position))
                     return oldNamecall(unpack(Arguments))
                 end
             elseif Method == "Raycast" then
@@ -1812,14 +1863,13 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
             elseif (Method == "ScreenPointToRay" or Method == "ViewportPointToRay") and self == Camera then
                 local shotOrigin = Camera.CFrame.Position
                 local direction = (SharedPart.Position - shotOrigin).Unit
-                return Ray.new(shotOrigin, direction)
+                return oldRayNew(shotOrigin, direction)
             end
         end
     end
     return oldNamecall(...)
 end))
 
-local oldIndex
 oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
     if self == Mouse and not checkcaller() and Config.SilentEnabled and 
        (Config.SilentMethod == "Mouse.Hit" or Config.SilentMethod == "Mouse.Target") then
@@ -1846,7 +1896,6 @@ oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
     return oldIndex(self, Index)
 end))
 
-local oldRayNew
 oldRayNew = hookfunction(Ray.new, newcclosure(function(origin, direction)
     if Config.SilentEnabled and (Config.SilentMethod == "Ray.new") and 
        SharedPart and SharedPart.Parent and not checkcaller() and CalculateChance(Config.SilentHitChance) then
